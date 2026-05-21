@@ -130,13 +130,21 @@
   <div class="panel">
     <h2>Sign an APK</h2>
     <p style="color:var(--muted);font-size:12px;margin:0 0 8px">
-      Paste a private key + certificate (PEM), pick an APK, choose schemes, and download a signed APK.
+      Paste a PEM key + cert or upload a JKS / PKCS#12 keystore, pick an APK, choose schemes, and download a signed APK.
       Use the <strong>Generate Keys</strong> tab to create a fresh key pair.
     </p>
     <label>APK file</label>
     <input type="file" id="sign-apk" accept=".apk,.apkm,application/vnd.android.package-archive">
 
-    <div class="row" style="margin-top:12px">
+    <div style="margin-top:12px">
+      <label>Key source</label>
+      <div class="row" style="margin-bottom:0">
+        <div><label><input type="radio" name="key-source" value="pem" id="ks-mode-pem" checked> PEM (paste)</label></div>
+        <div><label><input type="radio" name="key-source" value="keystore" id="ks-mode-keystore"> Keystore (.jks / .p12)</label></div>
+      </div>
+    </div>
+
+    <div class="row" id="pem-fields" style="margin-top:12px">
       <div>
         <label>Private key (PEM)</label>
         <textarea id="sign-key" placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----"></textarea>
@@ -145,6 +153,23 @@
         <label>Certificate (PEM)</label>
         <textarea id="sign-cert" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"></textarea>
       </div>
+    </div>
+
+    <div id="keystore-fields" style="display:none;margin-top:12px">
+      <label>Keystore file</label>
+      <input type="file" id="sign-keystore" accept=".jks,.keystore,.p12,.pfx">
+      <div class="row" style="margin-top:8px">
+        <div>
+          <label>Store password</label>
+          <input type="password" id="sign-storepass" placeholder="storepass" autocomplete="off">
+        </div>
+        <div>
+          <label>Key password (optional)</label>
+          <input type="password" id="sign-keypass" placeholder="defaults to store password" autocomplete="off">
+        </div>
+      </div>
+      <label style="margin-top:8px">Alias (optional)</label>
+      <input type="text" id="sign-alias" placeholder="defaults to first key entry" autocomplete="off">
     </div>
 
     <h3>Signing schemes</h3>
@@ -243,6 +268,14 @@ const { signedApk, idsig } = apksigSign(apkBytes, keyPEM, certPEM, {
   align: false,    // 4-byte alignment
   v3MinSdk: 28,
   v31MinSdk: 33,
+});
+
+// 2b. Sign with a JKS or PKCS#12 keystore
+const r = apksigSignKeystore(apkBytes, keystoreBytes, {
+  storePass: "changeit",
+  keyPass: "",     // optional, defaults to storePass
+  alias: "",       // optional, defaults to first key entry
+  v1: false, v3: true, v31: false, v4: false, align: false,
 });
 
 // 3. Verify v4
@@ -350,6 +383,7 @@ function schemeBox(name, verified, present) {
 
 // ----- Sign tab -----
 let signApkBytes = null;
+let signKeystoreBytes = null;
 document.getElementById('sign-apk').addEventListener('change', async (e) => {
   const file = e.target.files[0];
   if (!file) return;
@@ -359,12 +393,24 @@ document.getElementById('sign-apk').addEventListener('change', async (e) => {
     (signApkBytes.length / 1024 / 1024).toFixed(2) + ' MiB)</div>';
 });
 
+document.getElementById('sign-keystore').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  signKeystoreBytes = new Uint8Array(await file.arrayBuffer());
+});
+
+function updateKeyMode() {
+  const useKeystore = document.getElementById('ks-mode-keystore').checked;
+  document.getElementById('pem-fields').style.display = useKeystore ? 'none' : '';
+  document.getElementById('keystore-fields').style.display = useKeystore ? '' : 'none';
+}
+document.getElementById('ks-mode-pem').addEventListener('change', updateKeyMode);
+document.getElementById('ks-mode-keystore').addEventListener('change', updateKeyMode);
+
 document.getElementById('sign-btn').addEventListener('click', async () => {
   const out = document.getElementById('sign-result');
   if (!signApkBytes) { out.innerHTML = '<div class="bad">Pick an APK first.</div>'; return; }
-  const keyPEM = document.getElementById('sign-key').value.trim();
-  const certPEM = document.getElementById('sign-cert').value.trim();
-  if (!keyPEM || !certPEM) { out.innerHTML = '<div class="bad">Provide both key and certificate.</div>'; return; }
+  const useKeystore = document.getElementById('ks-mode-keystore').checked;
 
   const opts = {
     v1: document.getElementById('opt-v1').checked,
@@ -380,10 +426,22 @@ document.getElementById('sign-btn').addEventListener('click', async () => {
   out.innerHTML = '<div class="status">Signing…</div>';
   await new Promise(r => setTimeout(r, 30));
   const t0 = performance.now();
-  const r = apksigSign(signApkBytes,
-    new TextEncoder().encode(keyPEM),
-    new TextEncoder().encode(certPEM),
-    opts);
+  let r;
+  if (useKeystore) {
+    if (!signKeystoreBytes) { out.innerHTML = '<div class="bad">Pick a keystore file first.</div>'; return; }
+    opts.storePass = document.getElementById('sign-storepass').value;
+    opts.keyPass = document.getElementById('sign-keypass').value;
+    opts.alias = document.getElementById('sign-alias').value.trim();
+    r = apksigSignKeystore(signApkBytes, signKeystoreBytes, opts);
+  } else {
+    const keyPEM = document.getElementById('sign-key').value.trim();
+    const certPEM = document.getElementById('sign-cert').value.trim();
+    if (!keyPEM || !certPEM) { out.innerHTML = '<div class="bad">Provide both key and certificate.</div>'; return; }
+    r = apksigSign(signApkBytes,
+      new TextEncoder().encode(keyPEM),
+      new TextEncoder().encode(certPEM),
+      opts);
+  }
   const dt = (performance.now() - t0).toFixed(0);
 
   if (r.error) {

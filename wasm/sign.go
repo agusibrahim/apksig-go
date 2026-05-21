@@ -24,6 +24,7 @@ import (
 	"github.com/agusibrahim/apksig-go/pkg/apksigblock"
 	"github.com/agusibrahim/apksig-go/pkg/apkwriter"
 	"github.com/agusibrahim/apksig-go/pkg/datasource"
+	"github.com/agusibrahim/apksig-go/pkg/keystore"
 	"github.com/agusibrahim/apksig-go/pkg/signer"
 	"github.com/agusibrahim/apksig-go/pkg/v1signer"
 	"github.com/agusibrahim/apksig-go/pkg/v4signer"
@@ -44,6 +45,48 @@ func sign(this js.Value, args []js.Value) interface{} {
 	if len(args) >= 4 && args[3].Type() == js.TypeObject {
 		opts = jsObjectToMap(args[3])
 	}
+
+	priv, err := parsePEMPrivateKey(keyPEMBytes)
+	if err != nil {
+		return makeError("parse key: " + err.Error())
+	}
+	cert, err := parsePEMCertificate(certPEMBytes)
+	if err != nil {
+		return makeError("parse cert: " + err.Error())
+	}
+	return doSign(apkBytes, priv, cert, opts)
+}
+
+// signKeystore(apkBytes, keystoreBytes, opts) → { signedApk, idsig?, _debug }
+// opts: { storePass, keyPass?, alias?, v1, v3, v31, v4, align,
+//         v3MinSdk, v3MaxSdk, v31MinSdk, v31MaxSdk }
+func signKeystore(this js.Value, args []js.Value) interface{} {
+	if len(args) < 2 {
+		return makeError("apksigSignKeystore requires (apkBytes, keystoreBytes, opts)")
+	}
+	apkBytes := jsToBytes(args[0])
+	ksBytes := jsToBytes(args[1])
+
+	opts := map[string]interface{}{}
+	if len(args) >= 3 && args[2].Type() == js.TypeObject {
+		opts = jsObjectToMap(args[2])
+	}
+	storePass := getString(opts, "storePass", "")
+	keyPass := getString(opts, "keyPass", storePass)
+	alias := getString(opts, "alias", "")
+
+	entry, err := keystore.Load(ksBytes, keystore.LoadOpts{
+		StorePass: storePass,
+		KeyPass:   keyPass,
+		Alias:     alias,
+	})
+	if err != nil {
+		return makeError("keystore: " + err.Error())
+	}
+	return doSign(apkBytes, entry.PrivateKey, entry.Cert, opts)
+}
+
+func doSign(apkBytes []byte, priv crypto.PrivateKey, cert *x509.Certificate, opts map[string]interface{}) interface{} {
 	v3Enabled := getBool(opts, "v3", true)
 	v31Enabled := getBool(opts, "v31", false)
 	v4Enabled := getBool(opts, "v4", false)
@@ -54,14 +97,6 @@ func sign(this js.Value, args []js.Value) interface{} {
 	v31Min := getInt(opts, "v31MinSdk", 33)
 	v31Max := getInt(opts, "v31MaxSdk", 0x7fffffff)
 
-	priv, err := parsePEMPrivateKey(keyPEMBytes)
-	if err != nil {
-		return makeError("parse key: " + err.Error())
-	}
-	cert, err := parsePEMCertificate(certPEMBytes)
-	if err != nil {
-		return makeError("parse cert: " + err.Error())
-	}
 	alg, err := algo.PickAlgorithm(priv)
 	if err != nil {
 		return makeError("pick algorithm: " + err.Error())

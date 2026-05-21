@@ -22,6 +22,7 @@ import (
 func main() {
 	js.Global().Set("apksigVerify", js.FuncOf(verify))
 	js.Global().Set("apksigSign", js.FuncOf(sign))
+	js.Global().Set("apksigSignKeystore", js.FuncOf(signKeystore))
 	js.Global().Set("apksigVerifyV4", js.FuncOf(verifyV4))
 	js.Global().Set("apksigGenerateKey", js.FuncOf(generateKey))
 	js.Global().Set("apksigVersion", "2025.05.21b")
