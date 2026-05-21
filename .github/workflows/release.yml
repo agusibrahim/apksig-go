@@ -71,9 +71,16 @@ jobs:
           rm -rf "dist/${stage}"
 
       - name: Generate checksums
+        working-directory: dist
         run: |
-          cd dist && sha256sum *.tar.gz *.zip > SHA256SUMS 2>/dev/null || true
-          cat dist/SHA256SUMS
+          set -euxo pipefail
+          ls -la
+          # Hash whichever archives exist (tarballs always, zips only when
+          # building for Windows targets).
+          shopt -s nullglob
+          archives=( *.tar.gz *.zip )
+          sha256sum "${archives[@]}" > SHA256SUMS
+          cat SHA256SUMS
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2
