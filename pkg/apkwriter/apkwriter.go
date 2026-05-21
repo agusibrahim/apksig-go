@@ -162,9 +162,15 @@ func (sw *SignedAPKWriter) buildAligned(beforeEnd int64, eocd *zippkg.EOCD) (dat
 
 	for i, e := range entries {
 		newOffsets[i] = outOffset
+		// Determine total entry size including any data descriptor that
+		// follows the compressed data when the GP flag bit 3 is set.
+		ddSize, err := dataDescriptorSize(sw.Src, &entries[i], plans[i].EntryStart+plans[i].OriginalLFHSize+plans[i].DataSize)
+		if err != nil {
+			return nil, nil, fmt.Errorf("dd size %s: %w", e.Name, err)
+		}
 		if e.CompressionMethod != 0 {
 			// Compressed entry: copy raw bytes verbatim (no LFH rewrite).
-			entrySize := plans[i].OriginalLFHSize + plans[i].DataSize
+			entrySize := plans[i].OriginalLFHSize + plans[i].DataSize + ddSize
 			n, err := copyDS(&entryBuf, sw.Src.Slice(plans[i].EntryStart, entrySize))
 			if err != nil {
 				return nil, nil, fmt.Errorf("copy entry %s: %w", e.Name, err)
@@ -176,7 +182,7 @@ func (sw *SignedAPKWriter) buildAligned(beforeEnd int64, eocd *zippkg.EOCD) (dat
 			// that may already exist for .so files.
 			dataOff := outOffset + plans[i].OriginalLFHSize
 			if dataOff%4 == 0 {
-				entrySize := plans[i].OriginalLFHSize + plans[i].DataSize
+				entrySize := plans[i].OriginalLFHSize + plans[i].DataSize + ddSize
 				n, err := copyDS(&entryBuf, sw.Src.Slice(plans[i].EntryStart, entrySize))
 				if err != nil {
 					return nil, nil, fmt.Errorf("copy entry %s: %w", e.Name, err)
@@ -188,6 +194,14 @@ func (sw *SignedAPKWriter) buildAligned(beforeEnd int64, eocd *zippkg.EOCD) (dat
 					return nil, nil, fmt.Errorf("align entry %s: %w", e.Name, err)
 				}
 				outOffset += n
+				if ddSize > 0 {
+					ddStart := plans[i].EntryStart + plans[i].OriginalLFHSize + plans[i].DataSize
+					nd, err := copyDS(&entryBuf, sw.Src.Slice(ddStart, ddSize))
+					if err != nil {
+						return nil, nil, fmt.Errorf("copy dd %s: %w", e.Name, err)
+					}
+					outOffset += nd
+				}
 			}
 		}
 	}
@@ -224,6 +238,25 @@ func buildSchemePair(signers []*signer.SignerConfig, digests map[algo.ContentDig
 	binary.LittleEndian.PutUint32(wrapped[:4], uint32(len(out)))
 	copy(wrapped[4:], out)
 	return wrapped, nil
+}
+
+// dataDescriptorSize returns the size in bytes of any post-data descriptor
+// for an entry. When GP flag bit 3 is set, the LFH carries zero CRC/size
+// fields and the actual values follow the compressed data. The descriptor is
+// 12 bytes (crc32, csize, usize) and may be preceded by the optional 4-byte
+// signature 0x08074b50.
+func dataDescriptorSize(ds datasource.DataSource, e *zippkg.CDEntry, dataEnd int64) (int64, error) {
+	if e.GeneralPurpose&0x08 == 0 {
+		return 0, nil
+	}
+	hdr := make([]byte, 4)
+	if _, err := ds.ReadAt(hdr, dataEnd); err != nil {
+		return 0, err
+	}
+	if binary.LittleEndian.Uint32(hdr) == 0x08074b50 {
+		return 16, nil
+	}
+	return 12, nil
 }
 
 func copyDS(w io.Writer, ds datasource.DataSource) (int64, error) {
