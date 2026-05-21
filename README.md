@@ -14,12 +14,15 @@ browser without uploading anything.
 
 | Scheme | Verify | Sign |
 |---|:---:|:---:|
-| **v1** (JAR signing)            | ✅ | – |
+| **v1** (JAR signing)            | ✅ | ✅ |
 | **v2** (APK Signature Scheme v2) | ✅ | ✅ |
 | **v3** (APK Signature Scheme v3) | ✅ | ✅ |
 | **v3.1** (key rotation, SDK ≥ 33) | ✅ | ✅ |
 | **v4** (`.idsig`, fs-verity)     | ✅ | ✅ |
+| **v4.1** (dual-signer `.idsig`)   | ✅ | ✅ |
 | **SigningCertificateLineage**    | ✅ | – |
+| **zipalign** (4-byte entry alignment) | ✅ | ✅ |
+| **JKS / PKCS#12 keystore input**  | – | ✅ |
 
 Verified APKs signed by this library are accepted byte-for-byte by Google's
 upstream `apksigner` reference tool. Verification has been cross-validated
@@ -32,7 +35,9 @@ Existing options:
 - **`apksig` Java lib** — same constraint.
 
 This port has:
-- **Zero external Go dependencies** — only the standard library.
+- **Minimal external dependencies** — standard library plus two pure-Go
+  modules (`go-pkcs12`, `keystore-go`) used only by the optional
+  `pkg/keystore` loader.
 - **WebAssembly support** — runs in the browser, Node.js, Cloudflare Workers,
   embedded devices.
 - **CLI tools** — `apksigverify`, `apksign`, `apksigverifyv4` as drop-in
@@ -95,11 +100,25 @@ Verified: true
 openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem \
   -nodes -days 10950 -subj "/CN=Android Test/O=Example/C=US"
 
-# Sign with v2 + v3 + v3.1 + v4 (.idsig)
+# Sign with v1 + v2 + v3 + v3.1 + v4 (.idsig) and 4-byte zipalign
 apksign -key key.pem -cert cert.pem \
-        -v3.1 -v4 \
+        -v1 -v3.1 -v4 -align \
         -in unsigned.apk -out signed.apk
 ```
+
+Or sign directly from a JKS/PKCS#12 keystore created by Android Studio or
+keytool:
+
+```sh
+apksign -keystore release.jks -storepass env:KS_PASS -alias upload \
+        -v1 -v3.1 -align \
+        -in unsigned.apk -out signed.apk
+```
+
+`-storepass` and `-keypass` accept a literal password, `env:NAME` to pull
+from an environment variable, or `file:PATH` to read from a file — useful
+for keeping passwords out of shell history. `-alias` defaults to the first
+key entry in the store.
 
 This produces both `signed.apk` and `signed.apk.idsig`. Cross-check with
 Google's `apksigner` if you have the Android SDK installed:
@@ -189,8 +208,10 @@ cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" web/
 
 Serve `web/` over HTTP and open `index.html`. The demo includes:
 
-- APK verification (drag a file in, see all schemes verified locally).
-- APK signing (paste a key + cert, download the signed APK).
+- APK verification (drag a file in, see all schemes verified locally,
+  including 4KB native-library alignment status).
+- APK signing (paste a key + cert PEM **or** upload a JKS/PKCS#12 keystore
+  with a password, download the signed APK).
 - Key/certificate generator (RSA-2048, RSA-4096, or ECDSA P-256).
 - v4 `.idsig` verification.
 
@@ -200,10 +221,18 @@ JavaScript API:
 // Verify
 const result = apksigVerify(apkBytes, { minSdk: 24, maxSdk: 35 });
 
-// Sign
+// Sign with PEM key + cert
 const { signedApk, idsig } = apksigSign(apkBytes, keyPEM, certPEM, {
-  v3: true, v31: false, v4: false,
+  v1: false, v3: true, v31: false, v4: false, align: false,
   v3MinSdk: 28, v31MinSdk: 33,
+});
+
+// Sign with a JKS or PKCS#12 keystore (raw bytes)
+const r = apksigSignKeystore(apkBytes, keystoreBytes, {
+  storePass: "changeit",
+  keyPass: "",      // optional, defaults to storePass
+  alias: "",        // optional, defaults to first key entry
+  v1: false, v3: true, v31: false, v4: false, align: false,
 });
 
 // Verify v4 .idsig
@@ -224,7 +253,9 @@ pkg/
 ├── verifier/{v1,v2,v3,v4}/
 ├── apkwriter/      # Streams a re-signed APK
 ├── signer/         # Builds v2/v3/v3.1 signing block payloads
+├── v1signer/       # Builds META-INF (MANIFEST.MF / *.SF / *.RSA) for v1
 ├── v4signer/       # Builds .idsig files
+├── keystore/       # JKS and PKCS#12 keystore loader (auto-detect)
 ├── apksigblock/    # APK Signing Block parser
 ├── digest/         # Chunked SHA-256/512 + verity Merkle tree
 ├── algo/           # Signature algorithm table (RSA-PKCS1, RSA-PSS, ECDSA, DSA)
@@ -233,13 +264,13 @@ pkg/
 ├── lineage/        # SigningCertificateLineage (proof-of-rotation)
 ├── x509util/       # Lenient X.509 parser (handles Huawei/legacy quirks)
 ├── axml/           # Binary AndroidManifest.xml parser (extract minSdkVersion)
-├── zip/            # ZIP / EOCD / CD parsing
+├── zip/            # ZIP / EOCD / CD parsing + zipalign helpers
 ├── datasource/     # io.ReaderAt-based view abstraction (WASM-safe)
 └── buf/            # Length-prefixed slice helpers
 
 cmd/
 ├── apksigverify/   # CLI verifier
-├── apksign/        # CLI signer (v2/v3/v3.1/v4)
+├── apksign/        # CLI signer (v1/v2/v3/v3.1/v4, JKS/P12 input, zipalign)
 ├── apksigverifyv4/ # CLI for .idsig verification
 ├── certinfo/       # Print signer cert fingerprints
 └── axmldump/       # Debug AndroidManifest.xml dump
@@ -247,6 +278,7 @@ cmd/
 wasm/               # syscall/js bindings (build with GOOS=js GOARCH=wasm)
 web/                # HTML demo: index.html + apksig.wasm + wasm_exec.js
 testdata/apk/       # Real APK fixtures for end-to-end tests
+testdata/keystore/  # JKS / PKCS#12 fixtures for pkg/keystore tests
 tests/e2e/          # Integration tests including apksigner cross-check
 ```
 
@@ -284,11 +316,12 @@ A cross-validation script is also provided:
 
 ### Intentionally not implemented
 
-- v1 (JAR) signing — modern Android only needs v2+. PRs welcome.
-- v4.1 (dual-signer .idsig) — the kernel uses the older v4 form.
+- v1 (JAR) signing for non-standard manifest entries with continuation
+  lines beyond what `keytool` produces — the writer matches `apksigner`
+  output for typical Gradle builds.
+- JCEKS keystore format — convert to JKS or PKCS#12 with
+  `keytool -importkeystore` first.
 - Source stamp signing/verification.
-- Re-encoding ZIP entries (the writer copies them verbatim, which preserves
-  v1 integrity but does not implement `zipalign`).
 
 ## License
 
