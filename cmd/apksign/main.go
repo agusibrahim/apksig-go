@@ -8,19 +8,24 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
 	"crypto"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/agusibrahim/apksig-go/pkg/algo"
 	"github.com/agusibrahim/apksig-go/pkg/apkwriter"
 	"github.com/agusibrahim/apksig-go/pkg/datasource"
 	"github.com/agusibrahim/apksig-go/pkg/signer"
+	"github.com/agusibrahim/apksig-go/pkg/v1signer"
 	"github.com/agusibrahim/apksig-go/pkg/v4signer"
+	zippkg "github.com/agusibrahim/apksig-go/pkg/zip"
 )
 
 func main() {
@@ -36,6 +41,7 @@ func main() {
 	v31Max := flag.Int("v3.1-max-sdk", 0x7fffffff, "v3.1 max SDK")
 	v4 := flag.Bool("v4", false, "also write a .idsig (v4) file alongside the output APK")
 	v4Out := flag.String("v4-out", "", "v4 .idsig output path; defaults to <out>.idsig")
+	v1 := flag.Bool("v1", false, "also write a v1 (JAR) signature")
 	flag.Parse()
 	if *keyPath == "" || *certPath == "" || *in == "" || *out == "" {
 		fmt.Fprintln(os.Stderr, "usage: apksign -key key.pem -cert cert.pem -in in.apk -out out.apk")
@@ -70,6 +76,16 @@ func main() {
 	st, _ := f.Stat()
 	src := datasource.NewReaderAt(f, st.Size())
 
+	// If v1 signing is requested, create an intermediate APK with v1 META-INF files.
+	var v1Src datasource.DataSource = src
+	if *v1 {
+		v1Src, err = injectV1(src, priv, cert)
+		if err != nil {
+			fatal("v1 sign: %v", err)
+		}
+		fmt.Printf("v1 signature added\n")
+	}
+
 	outF, err := os.Create(*out)
 	if err != nil {
 		fatal("create output: %v", err)
@@ -77,7 +93,7 @@ func main() {
 	defer outF.Close()
 
 	w := &apkwriter.SignedAPKWriter{
-		Src:     src,
+		Src:     v1Src,
 		Signers: []*signer.SignerConfig{cfg},
 	}
 	if *v3 {
@@ -169,3 +185,65 @@ func loadCertificate(path string) (*x509.Certificate, error) {
 }
 
 func fatal(f string, a ...any) { fmt.Fprintf(os.Stderr, "apksign: "+f+"\n", a...); os.Exit(2) }
+
+func injectV1(src datasource.DataSource, priv crypto.PrivateKey, cert *x509.Certificate) (datasource.DataSource, error) {
+	eocd, err := zippkg.FindEOCD(src)
+	if err != nil {
+		return nil, fmt.Errorf("find EOCD: %w", err)
+	}
+	entries, err := zippkg.ParseCD(src, eocd)
+	if err != nil {
+		return nil, fmt.Errorf("parse CD: %w", err)
+	}
+
+	v1out, err := v1signer.Sign(src, entries, &v1signer.SignerConfig{
+		PrivateKey: priv,
+		Cert:       cert,
+		Name:       "CERT",
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	apkBytes, err := datasource.ReadAll(src)
+	if err != nil {
+		return nil, err
+	}
+	zr, err := zip.NewReader(bytes.NewReader(apkBytes), int64(len(apkBytes)))
+	if err != nil {
+		return nil, err
+	}
+	var buf bytes.Buffer
+	ww := zip.NewWriter(&buf)
+	for _, f := range zr.File {
+		rc, err := f.Open()
+		if err != nil {
+			return nil, err
+		}
+		w, err := ww.Create(f.Name)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := io.Copy(w, rc); err != nil {
+			return nil, err
+		}
+		rc.Close()
+	}
+	for name, data := range map[string][]byte{
+		"META-INF/MANIFEST.MF":            v1out.Manifest,
+		"META-INF/CERT.SF":                v1out.SF,
+		"META-INF/CERT" + v1out.Extension: v1out.PKCS7,
+	} {
+		w, err := ww.Create(name)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := w.Write(data); err != nil {
+			return nil, err
+		}
+	}
+	if err := ww.Close(); err != nil {
+		return nil, err
+	}
+	return datasource.NewBytes(buf.Bytes()), nil
+}
