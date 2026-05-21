@@ -104,6 +104,7 @@ func sign(this js.Value, args []js.Value) interface{} {
 
 	out := map[string]interface{}{
 		"signedApk": bytesToUint8Array(buf.b),
+		"_debug":    fmt.Sprintf("in=%d out=%d v1=%v", len(apkBytes), len(buf.b), v1Enabled),
 	}
 
 	if v4Enabled {
@@ -363,12 +364,17 @@ func injectV1WASM(src datasource.DataSource, priv crypto.PrivateKey, cert *x509.
 		return nil, err
 	}
 
-	// Preserve original entry bytes verbatim (keeps .so page alignment).
 	beforeEnd := eocd.CDStartOffset
 	if blk, err := apksigblock.Find(src, eocd); err == nil {
 		beforeEnd = blk.StartOffset
 	}
-	origEntries, err := datasource.ReadAll(src.Slice(0, beforeEnd))
+	fmt.Printf("injectV1WASM: srcSize=%d cdOff=%d beforeEnd=%d entries=%d\n", src.Size(), eocd.CDStartOffset, beforeEnd, len(entries))
+
+	var entryEnd int64 = eocd.CDStartOffset
+	if blk2, err2 := apksigblock.Find(src, eocd); err2 == nil {
+		entryEnd = blk2.StartOffset
+	}
+	origEntries, err := datasource.ReadAll(src.Slice(0, entryEnd))
 	if err != nil {
 		return nil, err
 	}
