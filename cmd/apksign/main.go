@@ -8,19 +8,20 @@
 package main
 
 import (
-	"archive/zip"
 	"bytes"
 	"crypto"
 	"crypto/x509"
+	"encoding/binary"
 	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
-	"io"
+	"hash/crc32"
 	"os"
 	"strings"
 
 	"github.com/agusibrahim/apksig-go/pkg/algo"
+	"github.com/agusibrahim/apksig-go/pkg/apksigblock"
 	"github.com/agusibrahim/apksig-go/pkg/apkwriter"
 	"github.com/agusibrahim/apksig-go/pkg/datasource"
 	"github.com/agusibrahim/apksig-go/pkg/signer"
@@ -208,50 +209,110 @@ func injectV1(src datasource.DataSource, priv crypto.PrivateKey, cert *x509.Cert
 		return nil, err
 	}
 
-	apkBytes, err := datasource.ReadAll(src)
+	// Preserve original entry bytes verbatim (keeps .so page alignment).
+	beforeEnd := eocd.CDStartOffset
+	if blk, err := apksigblock.Find(src, eocd); err == nil {
+		beforeEnd = blk.StartOffset
+	}
+	origEntries, err := datasource.ReadAll(src.Slice(0, beforeEnd))
 	if err != nil {
 		return nil, err
 	}
-	zr, err := zip.NewReader(bytes.NewReader(apkBytes), int64(len(apkBytes)))
+
+	metaFiles := []struct {
+		name string
+		data []byte
+	}{
+		{"META-INF/MANIFEST.MF", v1out.Manifest},
+		{"META-INF/CERT.SF", v1out.SF},
+		{"META-INF/CERT" + v1out.Extension, v1out.PKCS7},
+	}
+
+	var metaLFH, metaCD []byte
+	metaOffset := uint32(len(origEntries))
+	for _, mf := range metaFiles {
+		lfh, cdEntry := makeRawZipEntry(mf.name, mf.data, metaOffset)
+		metaLFH = append(metaLFH, lfh...)
+		metaCD = append(metaCD, cdEntry...)
+		metaOffset += uint32(len(lfh))
+	}
+
+	origCD, err := datasource.ReadAll(src.Slice(eocd.CDStartOffset, eocd.CDSize))
 	if err != nil {
 		return nil, err
 	}
-	var buf bytes.Buffer
-	ww := zip.NewWriter(&buf)
-	for _, f := range zr.File {
-		if isV1SignatureFile(f.Name) {
-			continue // strip old v1 signature files
+	filteredCD := filterRawCD(origCD, entries, isV1SignatureFile)
+	keptCount := countKept(entries, isV1SignatureFile)
+
+	var out bytes.Buffer
+	out.Write(origEntries)
+	out.Write(metaLFH)
+	cdOff := uint32(out.Len())
+	out.Write(filteredCD)
+	out.Write(metaCD)
+	cdSize := uint32(out.Len()) - cdOff
+	totalEntries := uint16(keptCount + len(metaFiles))
+
+	eocdRec := make([]byte, 22)
+	binary.LittleEndian.PutUint32(eocdRec[0:4], 0x06054b50)
+	binary.LittleEndian.PutUint16(eocdRec[8:10], totalEntries)
+	binary.LittleEndian.PutUint16(eocdRec[10:12], totalEntries)
+	binary.LittleEndian.PutUint32(eocdRec[12:16], cdSize)
+	binary.LittleEndian.PutUint32(eocdRec[16:20], cdOff)
+	out.Write(eocdRec)
+
+	return datasource.NewBytes(out.Bytes()), nil
+}
+
+func makeRawZipEntry(name string, data []byte, lfhOffset uint32) (lfh []byte, cdEntry []byte) {
+	crc := crc32.ChecksumIEEE(data)
+	nb := []byte(name)
+	lfh = make([]byte, 30+len(nb)+len(data))
+	binary.LittleEndian.PutUint32(lfh[0:4], 0x04034b50)
+	binary.LittleEndian.PutUint16(lfh[4:6], 20)
+	binary.LittleEndian.PutUint16(lfh[8:10], 0)
+	binary.LittleEndian.PutUint32(lfh[14:18], crc)
+	binary.LittleEndian.PutUint32(lfh[18:22], uint32(len(data)))
+	binary.LittleEndian.PutUint32(lfh[22:26], uint32(len(data)))
+	binary.LittleEndian.PutUint16(lfh[26:28], uint16(len(nb)))
+	copy(lfh[30:], nb)
+	copy(lfh[30+len(nb):], data)
+
+	cdEntry = make([]byte, 46+len(nb))
+	binary.LittleEndian.PutUint32(cdEntry[0:4], 0x02014b50)
+	binary.LittleEndian.PutUint16(cdEntry[4:6], 20)
+	binary.LittleEndian.PutUint16(cdEntry[6:8], 20)
+	binary.LittleEndian.PutUint16(cdEntry[10:12], 0)
+	binary.LittleEndian.PutUint32(cdEntry[16:20], crc)
+	binary.LittleEndian.PutUint32(cdEntry[20:24], uint32(len(data)))
+	binary.LittleEndian.PutUint32(cdEntry[24:28], uint32(len(data)))
+	binary.LittleEndian.PutUint16(cdEntry[28:30], uint16(len(nb)))
+	binary.LittleEndian.PutUint32(cdEntry[42:46], lfhOffset)
+	copy(cdEntry[46:], nb)
+	return
+}
+
+func filterRawCD(rawCD []byte, entries []zippkg.CDEntry, skipFn func(string) bool) []byte {
+	var out []byte
+	off := int64(0)
+	for _, e := range entries {
+		n := e.HeaderSize
+		if !skipFn(e.Name) {
+			out = append(out, rawCD[off:off+n]...)
 		}
-		rc, err := f.Open()
-		if err != nil {
-			return nil, err
-		}
-		w, err := ww.Create(f.Name)
-		if err != nil {
-			return nil, err
-		}
-		if _, err := io.Copy(w, rc); err != nil {
-			return nil, err
-		}
-		rc.Close()
+		off += n
 	}
-	for name, data := range map[string][]byte{
-		"META-INF/MANIFEST.MF":            v1out.Manifest,
-		"META-INF/CERT.SF":                v1out.SF,
-		"META-INF/CERT" + v1out.Extension: v1out.PKCS7,
-	} {
-		w, err := ww.Create(name)
-		if err != nil {
-			return nil, err
-		}
-		if _, err := w.Write(data); err != nil {
-			return nil, err
+	return out
+}
+
+func countKept(entries []zippkg.CDEntry, skipFn func(string) bool) int {
+	n := 0
+	for _, e := range entries {
+		if !skipFn(e.Name) {
+			n++
 		}
 	}
-	if err := ww.Close(); err != nil {
-		return nil, err
-	}
-	return datasource.NewBytes(buf.Bytes()), nil
+	return n
 }
 
 func isV1SignatureFile(name string) bool {
