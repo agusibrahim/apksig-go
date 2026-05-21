@@ -1,0 +1,10 @@
+apksig-go
+Copyright 2026 Agus Ibrahim
+
+Licensed under the Apache License, Version 2.0.
+
+This product is a clean-room Go port of Android's apksig library
+(https://android.googlesource.com/platform/tools/apksig), originally
+authored by The Android Open Source Project. The algorithms, on-wire
+formats, and constant tables follow that upstream specification.
+The Java reference implementation is also Apache-2.0 licensed.

@@ -1,0 +1,92 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Build binaries
+        run: |
+          set -euxo pipefail
+          mkdir -p dist
+          VERSION="${GITHUB_REF_NAME:-dev}"
+          LDFLAGS="-s -w -X main.version=${VERSION}"
+
+          targets=(
+            "linux/amd64"
+            "linux/arm64"
+            "darwin/amd64"
+            "darwin/arm64"
+            "windows/amd64"
+            "windows/arm64"
+          )
+          tools=("apksigverify" "apksign" "apksigverifyv4" "certinfo" "axmldump")
+
+          for target in "${targets[@]}"; do
+            os="${target%%/*}"
+            arch="${target##*/}"
+            ext=""
+            if [ "$os" = "windows" ]; then ext=".exe"; fi
+            stage="apksig-go_${VERSION}_${os}_${arch}"
+            mkdir -p "dist/${stage}"
+            cp README.md LICENSE NOTICE "dist/${stage}/"
+            for tool in "${tools[@]}"; do
+              GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 \
+                go build -trimpath -ldflags "$LDFLAGS" \
+                -o "dist/${stage}/${tool}${ext}" "./cmd/${tool}"
+            done
+            if [ "$os" = "windows" ]; then
+              (cd dist && zip -r "${stage}.zip" "${stage}" >/dev/null)
+            else
+              tar -C dist -czf "dist/${stage}.tar.gz" "${stage}"
+            fi
+            rm -rf "dist/${stage}"
+          done
+
+      - name: Build WASM bundle
+        run: |
+          set -euxo pipefail
+          VERSION="${GITHUB_REF_NAME:-dev}"
+          stage="apksig-go_${VERSION}_wasm"
+          mkdir -p "dist/${stage}"
+          GOOS=js GOARCH=wasm go build -trimpath -ldflags "-s -w" \
+            -o "dist/${stage}/apksig.wasm" ./wasm
+          cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" "dist/${stage}/"
+          cp web/index.html web/node-test.js "dist/${stage}/" 2>/dev/null || true
+          cp README.md LICENSE NOTICE "dist/${stage}/"
+          tar -C dist -czf "dist/${stage}.tar.gz" "${stage}"
+          rm -rf "dist/${stage}"
+
+      - name: Generate checksums
+        run: |
+          cd dist && sha256sum *.tar.gz *.zip > SHA256SUMS 2>/dev/null || true
+          cat dist/SHA256SUMS
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/SHA256SUMS
+          generate_release_notes: true
+          body: |
+            See [README.md](https://github.com/agusibrahim/apksig-go/blob/main/README.md) for usage.
+
+            **Verify checksum:**
+            ```
+            sha256sum -c SHA256SUMS
+            ```

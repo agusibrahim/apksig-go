@@ -1,0 +1,165 @@
+// apksign signs an APK with a given private key + certificate, producing a
+// signed APK that can be installed on Android.
+//
+//   apksign -key key.pem -cert cert.pem -in unsigned.apk -out signed.apk
+
+//go:debug x509negativeserial=1
+
+package main
+
+import (
+	"crypto"
+	"crypto/x509"
+	"encoding/pem"
+	"errors"
+	"flag"
+	"fmt"
+	"os"
+
+	"github.com/agusibrahim/apksig-go/pkg/algo"
+	"github.com/agusibrahim/apksig-go/pkg/apkwriter"
+	"github.com/agusibrahim/apksig-go/pkg/datasource"
+	"github.com/agusibrahim/apksig-go/pkg/signer"
+	"github.com/agusibrahim/apksig-go/pkg/v4signer"
+)
+
+func main() {
+	keyPath := flag.String("key", "", "PEM-encoded PKCS#8 (or RSA) private key")
+	certPath := flag.String("cert", "", "PEM-encoded X.509 certificate")
+	in := flag.String("in", "", "input APK")
+	out := flag.String("out", "", "output APK")
+	v3 := flag.Bool("v3", true, "also write a v3 signature")
+	v3Min := flag.Int("v3-min-sdk", 28, "v3 min SDK")
+	v3Max := flag.Int("v3-max-sdk", 0x7fffffff, "v3 max SDK")
+	v31 := flag.Bool("v3.1", false, "also write a v3.1 signature (rotation)")
+	v31Min := flag.Int("v3.1-min-sdk", 33, "v3.1 min SDK")
+	v31Max := flag.Int("v3.1-max-sdk", 0x7fffffff, "v3.1 max SDK")
+	v4 := flag.Bool("v4", false, "also write a .idsig (v4) file alongside the output APK")
+	v4Out := flag.String("v4-out", "", "v4 .idsig output path; defaults to <out>.idsig")
+	flag.Parse()
+	if *keyPath == "" || *certPath == "" || *in == "" || *out == "" {
+		fmt.Fprintln(os.Stderr, "usage: apksign -key key.pem -cert cert.pem -in in.apk -out out.apk")
+		os.Exit(2)
+	}
+
+	priv, err := loadPrivateKey(*keyPath)
+	if err != nil {
+		fatal("key: %v", err)
+	}
+	cert, err := loadCertificate(*certPath)
+	if err != nil {
+		fatal("cert: %v", err)
+	}
+
+	alg, err := algo.PickAlgorithm(priv)
+	if err != nil {
+		fatal("pick algorithm: %v", err)
+	}
+
+	cfg := &signer.SignerConfig{
+		PrivateKey: priv,
+		Certs:      []*x509.Certificate{cert},
+		Algorithms: []algo.Algorithm{alg},
+	}
+
+	f, err := os.Open(*in)
+	if err != nil {
+		fatal("open input: %v", err)
+	}
+	defer f.Close()
+	st, _ := f.Stat()
+	src := datasource.NewReaderAt(f, st.Size())
+
+	outF, err := os.Create(*out)
+	if err != nil {
+		fatal("create output: %v", err)
+	}
+	defer outF.Close()
+
+	w := &apkwriter.SignedAPKWriter{
+		Src:     src,
+		Signers: []*signer.SignerConfig{cfg},
+	}
+	if *v3 {
+		w.V3MinSdk = int32(*v3Min)
+		w.V3MaxSdk = int32(*v3Max)
+	}
+	if *v31 {
+		w.V31MinSdk = int32(*v31Min)
+		w.V31MaxSdk = int32(*v31Max)
+	}
+	if err := w.Write(outF); err != nil {
+		fatal("write: %v", err)
+	}
+	fmt.Printf("signed %s -> %s (%d bytes)\n", *in, *out, fileSize(*out))
+
+	if *v4 {
+		idsigPath := *v4Out
+		if idsigPath == "" {
+			idsigPath = *out + ".idsig"
+		}
+		// Re-open the freshly written APK as a DataSource for v4 signing.
+		signedF, err := os.Open(*out)
+		if err != nil {
+			fatal("reopen output for v4: %v", err)
+		}
+		defer signedF.Close()
+		signedSt, _ := signedF.Stat()
+		signedDS := datasource.NewReaderAt(signedF, signedSt.Size())
+
+		idsig, err := v4signer.Sign(signedDS, &v4signer.Config{
+			PrivateKey: priv,
+			Cert:       cert,
+			Algorithm:  alg,
+		})
+		if err != nil {
+			fatal("v4 sign: %v", err)
+		}
+		if err := os.WriteFile(idsigPath, idsig, 0644); err != nil {
+			fatal("write idsig: %v", err)
+		}
+		fmt.Printf("v4 signature -> %s (%d bytes)\n", idsigPath, len(idsig))
+	}
+}
+
+func fileSize(p string) int64 {
+	st, err := os.Stat(p)
+	if err != nil {
+		return 0
+	}
+	return st.Size()
+}
+
+func loadPrivateKey(path string) (crypto.PrivateKey, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return nil, errors.New("not a PEM file")
+	}
+	switch block.Type {
+	case "PRIVATE KEY":
+		return x509.ParsePKCS8PrivateKey(block.Bytes)
+	case "RSA PRIVATE KEY":
+		return x509.ParsePKCS1PrivateKey(block.Bytes)
+	case "EC PRIVATE KEY":
+		return x509.ParseECPrivateKey(block.Bytes)
+	}
+	return nil, fmt.Errorf("unsupported PEM type %q", block.Type)
+}
+
+func loadCertificate(path string) (*x509.Certificate, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return nil, errors.New("not a PEM file")
+	}
+	return x509.ParseCertificate(block.Bytes)
+}
+
+func fatal(f string, a ...any) { fmt.Fprintf(os.Stderr, "apksign: "+f+"\n", a...); os.Exit(2) }

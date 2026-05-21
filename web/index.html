@@ -1,0 +1,478 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>apksig — Pure-Go APK Signature Tool</title>
+<style>
+  :root {
+    --fg: #1f2328;
+    --muted: #656d76;
+    --bg: #ffffff;
+    --panel: #f6f8fa;
+    --border: #d0d7de;
+    --accent: #0969da;
+    --ok: #1a7f37;
+    --bad: #cf222e;
+    --warn: #9a6700;
+    --code-bg: #f6f8fa;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    max-width: 900px; margin: 32px auto; padding: 0 20px;
+    color: var(--fg); background: var(--bg);
+  }
+  header { margin-bottom: 24px; border-bottom: 1px solid var(--border); padding-bottom: 16px; }
+  header h1 { margin: 0 0 4px; font-size: 22px; font-weight: 600; }
+  header p { margin: 4px 0; color: var(--muted); font-size: 13px; }
+  header a { color: var(--accent); text-decoration: none; }
+  header a:hover { text-decoration: underline; }
+
+  .tabs {
+    display: flex; gap: 0; border-bottom: 1px solid var(--border);
+    margin-bottom: 16px;
+  }
+  .tab {
+    padding: 10px 16px; border: none; background: transparent;
+    cursor: pointer; font: inherit; color: var(--muted);
+    border-bottom: 2px solid transparent;
+  }
+  .tab.active { color: var(--fg); border-bottom-color: var(--accent); font-weight: 500; }
+  .tab:hover:not(.active) { color: var(--fg); background: var(--panel); }
+
+  .pane { display: none; }
+  .pane.active { display: block; }
+
+  .panel {
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 16px; margin-top: 12px; background: var(--panel);
+  }
+  .panel h2 { margin: 0 0 8px; font-size: 14px; font-weight: 600; }
+  .panel h3 { margin: 12px 0 6px; font-size: 13px; font-weight: 600; }
+
+  label { display: block; margin: 8px 0 4px; font-size: 12px; color: var(--muted); }
+  input[type=file], input[type=text], input[type=number], select {
+    width: 100%; padding: 6px 10px; border: 1px solid var(--border);
+    border-radius: 4px; background: white; font: inherit;
+  }
+  textarea {
+    width: 100%; min-height: 100px; padding: 8px 10px;
+    border: 1px solid var(--border); border-radius: 4px;
+    font: 11px/1.4 "SF Mono", Menlo, Consolas, monospace; background: white;
+  }
+  button {
+    padding: 7px 14px; border: 1px solid var(--border); border-radius: 5px;
+    background: white; cursor: pointer; font: inherit; font-weight: 500;
+  }
+  button:hover:not(:disabled) { background: var(--panel); }
+  button.primary {
+    background: var(--accent); color: white; border-color: var(--accent);
+  }
+  button.primary:hover:not(:disabled) { background: #0860c8; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .ok { color: var(--ok); font-weight: 600; }
+  .bad { color: var(--bad); font-weight: 600; }
+  .warn { color: var(--warn); }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 4px; padding: 10px; overflow: auto; font-size: 11px;
+    margin: 8px 0;
+  }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; }
+  .row > * { flex: 1; min-width: 140px; }
+  .scheme-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 12px; }
+  .scheme-grid > div {
+    padding: 6px 10px; border-radius: 4px; text-align: center;
+    background: white; border: 1px solid var(--border); font-size: 12px;
+  }
+  .label-tag { display: inline-block; padding: 2px 8px; border-radius: 10px;
+    background: var(--panel); border: 1px solid var(--border); font-size: 11px;
+    color: var(--muted); margin-left: 6px; }
+  .actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  .status { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  details summary { cursor: pointer; padding: 6px 0; user-select: none; }
+  details[open] summary { font-weight: 500; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>apksig <span class="label-tag">Go → WebAssembly</span></h1>
+  <p>Pure-Go port of Android's <a href="https://android.googlesource.com/platform/tools/apksig">apksig</a>
+     library, compiled to WASM. Verify and sign APKs locally — nothing leaves your browser.</p>
+  <p>Supports v1 (JAR), v2, v3, v3.1, v4 (.idsig). Source: <a href="#" id="repo-link">github</a>.</p>
+</header>
+
+<div class="tabs">
+  <button class="tab active" data-tab="verify">Verify</button>
+  <button class="tab" data-tab="sign">Sign</button>
+  <button class="tab" data-tab="keygen">Generate Keys</button>
+  <button class="tab" data-tab="v4">v4 (.idsig)</button>
+  <button class="tab" data-tab="api">API</button>
+</div>
+
+<div id="status-bar" class="status">Loading WebAssembly runtime…</div>
+
+<!-- ============================== VERIFY TAB ============================== -->
+<div class="pane active" data-pane="verify">
+  <div class="panel">
+    <h2>Verify an APK</h2>
+    <label>APK file</label>
+    <input type="file" id="verify-apk" accept=".apk,.apkm,application/vnd.android.package-archive">
+    <div id="verify-result"></div>
+  </div>
+</div>
+
+<!-- ============================== SIGN TAB ============================== -->
+<div class="pane" data-pane="sign">
+  <div class="panel">
+    <h2>Sign an APK</h2>
+    <p style="color:var(--muted);font-size:12px;margin:0 0 8px">
+      Paste a private key + certificate (PEM), pick an APK, choose schemes, and download a signed APK.
+      Use the <strong>Generate Keys</strong> tab to create a fresh key pair.
+    </p>
+    <label>APK file</label>
+    <input type="file" id="sign-apk" accept=".apk,.apkm,application/vnd.android.package-archive">
+
+    <div class="row" style="margin-top:12px">
+      <div>
+        <label>Private key (PEM)</label>
+        <textarea id="sign-key" placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----"></textarea>
+      </div>
+      <div>
+        <label>Certificate (PEM)</label>
+        <textarea id="sign-cert" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"></textarea>
+      </div>
+    </div>
+
+    <h3>Signing schemes</h3>
+    <div class="row">
+      <div><label><input type="checkbox" id="opt-v3" checked> v3 signature</label></div>
+      <div><label><input type="checkbox" id="opt-v31"> v3.1 (rotation)</label></div>
+      <div><label><input type="checkbox" id="opt-v4"> v4 (.idsig file)</label></div>
+    </div>
+
+    <details style="margin-top:8px">
+      <summary>Advanced SDK ranges</summary>
+      <div class="row" style="margin-top:8px">
+        <div><label>v3 min SDK</label><input type="number" id="opt-v3min" value="28"></div>
+        <div><label>v3 max SDK</label><input type="number" id="opt-v3max" value="2147483647"></div>
+        <div><label>v3.1 min SDK</label><input type="number" id="opt-v31min" value="33"></div>
+      </div>
+    </details>
+
+    <div class="actions">
+      <button class="primary" id="sign-btn" disabled>Sign APK</button>
+      <button id="sign-load-fixture">Load demo key+cert</button>
+    </div>
+    <div id="sign-result"></div>
+  </div>
+</div>
+
+<!-- ============================== KEYGEN TAB ============================== -->
+<div class="pane" data-pane="keygen">
+  <div class="panel">
+    <h2>Generate signing key & self-signed cert</h2>
+    <p style="color:var(--muted);font-size:12px">For dev/testing only. For production, use a long-lived
+       key managed in a secure keystore.</p>
+
+    <div class="row">
+      <div><label>Common name (CN)</label><input type="text" id="kg-cn" value="Android Test"></div>
+      <div><label>Organization</label><input type="text" id="kg-org" value="Example Inc"></div>
+      <div><label>Country (C)</label><input type="text" id="kg-country" value="US"></div>
+    </div>
+    <div class="row">
+      <div><label>Validity (days)</label><input type="number" id="kg-days" value="10950"></div>
+      <div>
+        <label>Key type</label>
+        <select id="kg-type">
+          <option value="rsa">RSA-2048</option>
+          <option value="rsa-4096" data-bits="4096">RSA-4096</option>
+          <option value="ecdsa">ECDSA P-256</option>
+        </select>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="primary" id="kg-btn" disabled>Generate</button>
+    </div>
+    <div id="kg-result"></div>
+  </div>
+</div>
+
+<!-- ============================== V4 TAB ============================== -->
+<div class="pane" data-pane="v4">
+  <div class="panel">
+    <h2>v4 .idsig verification</h2>
+    <p style="color:var(--muted);font-size:12px">Pick the APK and its sibling
+       <code>.idsig</code> file. v4 signatures require a corresponding v3 (or v2) signature in the APK.</p>
+    <div class="row">
+      <div>
+        <label>APK file</label>
+        <input type="file" id="v4-apk" accept=".apk">
+      </div>
+      <div>
+        <label>.idsig file</label>
+        <input type="file" id="v4-idsig" accept=".idsig">
+      </div>
+    </div>
+    <div class="actions">
+      <button class="primary" id="v4-btn" disabled>Verify v4</button>
+    </div>
+    <div id="v4-result"></div>
+  </div>
+</div>
+
+<!-- ============================== API TAB ============================== -->
+<div class="pane" data-pane="api">
+  <div class="panel">
+    <h2>JavaScript API</h2>
+    <p>Once <code>apksig.wasm</code> is loaded these globals are available:</p>
+    <pre><code>// 1. Verify
+const result = apksigVerify(uint8Array, { minSdk: 24, maxSdk: 35 });
+
+// 2. Sign
+const { signedApk, idsig } = apksigSign(apkBytes, keyPEM, certPEM, {
+  v3: true,
+  v31: false,
+  v4: false,
+  v3MinSdk: 28,
+  v31MinSdk: 33,
+});
+
+// 3. Verify v4
+const v4Result = apksigVerifyV4(apkBytes, idsigBytes);
+
+// 4. Generate key pair (returns { keyPEM, certPEM })
+const { keyPEM, certPEM } = apksigGenerateKey({
+  commonName: "Android Test",
+  org: "Example Inc",
+  country: "US",
+  validityDays: 10950,
+  keyType: "rsa",       // "rsa" | "ecdsa"
+  rsaBits: 2048,
+});</code></pre>
+    <h3>Loading the runtime</h3>
+    <pre><code>&lt;script src="wasm_exec.js"&gt;&lt;/script&gt;
+&lt;script&gt;
+  const go = new Go();
+  WebAssembly.instantiateStreaming(fetch("apksig.wasm"), go.importObject)
+    .then(r =&gt; { go.run(r.instance); });
+&lt;/script&gt;</code></pre>
+  </div>
+</div>
+
+<script src="wasm_exec.js"></script>
+<script>
+'use strict';
+
+// ----- Tab routing -----
+const statusBar = document.getElementById('status-bar');
+document.querySelectorAll('.tab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.pane').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.querySelector(`.pane[data-pane="${btn.dataset.tab}"]`).classList.add('active');
+  });
+});
+
+// ----- WASM bootstrap -----
+const go = new Go();
+let wasmReady = false;
+WebAssembly.instantiateStreaming(fetch('apksig.wasm'), go.importObject)
+  .then(r => {
+    go.run(r.instance);
+    wasmReady = true;
+    statusBar.textContent = 'Ready.';
+    document.getElementById('sign-btn').disabled = false;
+    document.getElementById('kg-btn').disabled = false;
+    document.getElementById('v4-btn').disabled = false;
+  })
+  .catch(err => { statusBar.innerHTML = '<span class="bad">Failed to load WASM: ' + escapeHtml(err.message) + '</span>'; });
+
+// ----- Verify tab -----
+document.getElementById('verify-apk').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file || !wasmReady) return;
+  const out = document.getElementById('verify-result');
+  out.innerHTML = '<div class="status">Reading…</div>';
+  const buf = new Uint8Array(await file.arrayBuffer());
+  out.innerHTML = '<div class="status">Verifying ' + (buf.length / 1024 / 1024).toFixed(2) + ' MiB…</div>';
+  const t0 = performance.now();
+  const r = apksigVerify(buf, { minSdk: 24, maxSdk: 35 });
+  const dt = (performance.now() - t0).toFixed(0);
+  renderVerify(out, r, file.name, dt);
+});
+
+function renderVerify(target, r, name, dt) {
+  let html = '<h3>' + escapeHtml(name) + ' <span class="label-tag">' + dt + ' ms</span></h3>';
+  html += '<div class="' + (r.verified ? 'ok' : 'bad') + '">'
+        + (r.verified ? '✓ VERIFIED' : '✗ NOT VERIFIED') + '</div>';
+  html += '<div class="scheme-grid">';
+  html += schemeBox('v1',  r.v1Verified, r.v1Verified || r.signers?.some(s=>s.scheme==='v1'));
+  html += schemeBox('v2',  r.v2Verified, r.hasV2Block);
+  html += schemeBox('v3',  r.v3Verified, r.hasV3Block);
+  html += schemeBox('v3.1',r.v31Verified, r.hasV31Block);
+  html += '</div>';
+  if (r.signers && r.signers.length) {
+    html += '<h3>Signers</h3>';
+    for (const s of r.signers) {
+      html += '<details><summary>' + escapeHtml(s.scheme) +
+              ' — ' + (s.verified ? '<span class="ok">verified</span>' : '<span class="bad">failed</span>') +
+              '</summary><pre>' + escapeHtml(JSON.stringify(s, null, 2)) + '</pre></details>';
+    }
+  }
+  if (r.errors && r.errors.length) {
+    html += '<h3 style="color:var(--bad)">Errors</h3><pre>' + escapeHtml(r.errors.join('\n')) + '</pre>';
+  }
+  if (r.warnings && r.warnings.length) {
+    html += '<h3 class="warn">Warnings</h3><pre>' + escapeHtml(r.warnings.join('\n')) + '</pre>';
+  }
+  target.innerHTML = html;
+}
+
+function schemeBox(name, verified, present) {
+  const cls = verified ? 'ok' : (present ? 'bad' : '');
+  const txt = present ? (verified ? '✓ ok' : '✗ fail') : 'absent';
+  return '<div><strong>' + name + '</strong><br><span class="' + cls + '">' + txt + '</span></div>';
+}
+
+// ----- Sign tab -----
+let signApkBytes = null;
+document.getElementById('sign-apk').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  signApkBytes = new Uint8Array(await file.arrayBuffer());
+  document.getElementById('sign-result').innerHTML =
+    '<div class="status">Loaded ' + file.name + ' (' +
+    (signApkBytes.length / 1024 / 1024).toFixed(2) + ' MiB)</div>';
+});
+
+document.getElementById('sign-btn').addEventListener('click', async () => {
+  const out = document.getElementById('sign-result');
+  if (!signApkBytes) { out.innerHTML = '<div class="bad">Pick an APK first.</div>'; return; }
+  const keyPEM = document.getElementById('sign-key').value.trim();
+  const certPEM = document.getElementById('sign-cert').value.trim();
+  if (!keyPEM || !certPEM) { out.innerHTML = '<div class="bad">Provide both key and certificate.</div>'; return; }
+
+  const opts = {
+    v3: document.getElementById('opt-v3').checked,
+    v31: document.getElementById('opt-v31').checked,
+    v4: document.getElementById('opt-v4').checked,
+    v3MinSdk: parseInt(document.getElementById('opt-v3min').value, 10),
+    v3MaxSdk: parseInt(document.getElementById('opt-v3max').value, 10),
+    v31MinSdk: parseInt(document.getElementById('opt-v31min').value, 10),
+  };
+
+  out.innerHTML = '<div class="status">Signing…</div>';
+  await new Promise(r => setTimeout(r, 30));
+  const t0 = performance.now();
+  const r = apksigSign(signApkBytes,
+    new TextEncoder().encode(keyPEM),
+    new TextEncoder().encode(certPEM),
+    opts);
+  const dt = (performance.now() - t0).toFixed(0);
+
+  if (r.error) {
+    out.innerHTML = '<div class="bad">Error: ' + escapeHtml(r.error) + '</div>';
+    return;
+  }
+  let html = '<div class="ok">✓ Signed in ' + dt + ' ms</div>';
+  html += '<p>signed APK: ' + r.signedApk.length + ' bytes</p>';
+  html += '<button class="primary" id="dl-apk">Download signed APK</button>';
+  if (r.idsig) {
+    html += ' <button class="primary" id="dl-idsig">Download .idsig</button>';
+    html += '<p>idsig: ' + r.idsig.length + ' bytes</p>';
+  }
+  if (r.v4Error) {
+    html += '<div class="bad">v4 error: ' + escapeHtml(r.v4Error) + '</div>';
+  }
+  out.innerHTML = html;
+  document.getElementById('dl-apk').onclick = () => download('signed.apk', r.signedApk);
+  if (r.idsig) {
+    document.getElementById('dl-idsig').onclick = () => download('signed.apk.idsig', r.idsig);
+  }
+});
+
+document.getElementById('sign-load-fixture').addEventListener('click', () => {
+  // Generate a fresh key for convenience.
+  const r = apksigGenerateKey({ commonName: "demo", org: "apksig-go", country: "US",
+                                 validityDays: 10950, keyType: "rsa", rsaBits: 2048 });
+  if (r.error) { alert(r.error); return; }
+  document.getElementById('sign-key').value = r.keyPEM;
+  document.getElementById('sign-cert').value = r.certPEM;
+});
+
+// ----- Keygen tab -----
+document.getElementById('kg-btn').addEventListener('click', () => {
+  const out = document.getElementById('kg-result');
+  const sel = document.getElementById('kg-type');
+  let keyType = 'rsa', rsaBits = 2048;
+  if (sel.value === 'ecdsa') keyType = 'ecdsa';
+  else if (sel.value === 'rsa-4096') { keyType = 'rsa'; rsaBits = 4096; }
+
+  out.innerHTML = '<div class="status">Generating ' + (keyType==='ecdsa'?'ECDSA':('RSA-'+rsaBits)) + '…</div>';
+  setTimeout(() => {
+    const r = apksigGenerateKey({
+      commonName: document.getElementById('kg-cn').value || 'Test',
+      org: document.getElementById('kg-org').value || 'apksig-go',
+      country: document.getElementById('kg-country').value || 'US',
+      validityDays: parseInt(document.getElementById('kg-days').value, 10) || 10950,
+      keyType, rsaBits,
+    });
+    if (r.error) { out.innerHTML = '<div class="bad">Error: ' + escapeHtml(r.error) + '</div>'; return; }
+    let html = '<div class="ok">✓ Generated</div>';
+    html += '<h3>Private key (key.pem)</h3>';
+    html += '<textarea readonly>' + escapeHtml(r.keyPEM) + '</textarea>';
+    html += '<button id="kg-dl-key">Download key.pem</button>';
+    html += '<h3>Certificate (cert.pem)</h3>';
+    html += '<textarea readonly>' + escapeHtml(r.certPEM) + '</textarea>';
+    html += '<button id="kg-dl-cert">Download cert.pem</button> ';
+    html += '<button id="kg-use">Use these in Sign tab</button>';
+    out.innerHTML = html;
+    document.getElementById('kg-dl-key').onclick = () => downloadText('key.pem', r.keyPEM);
+    document.getElementById('kg-dl-cert').onclick = () => downloadText('cert.pem', r.certPEM);
+    document.getElementById('kg-use').onclick = () => {
+      document.getElementById('sign-key').value = r.keyPEM;
+      document.getElementById('sign-cert').value = r.certPEM;
+      document.querySelector('.tab[data-tab="sign"]').click();
+    };
+  }, 30);
+});
+
+// ----- v4 tab -----
+let v4Apk = null, v4Idsig = null;
+document.getElementById('v4-apk').addEventListener('change', async e => {
+  if (e.target.files[0]) v4Apk = new Uint8Array(await e.target.files[0].arrayBuffer());
+});
+document.getElementById('v4-idsig').addEventListener('change', async e => {
+  if (e.target.files[0]) v4Idsig = new Uint8Array(await e.target.files[0].arrayBuffer());
+});
+document.getElementById('v4-btn').addEventListener('click', () => {
+  const out = document.getElementById('v4-result');
+  if (!v4Apk || !v4Idsig) { out.innerHTML = '<div class="bad">Pick both files.</div>'; return; }
+  const r = apksigVerifyV4(v4Apk, v4Idsig);
+  if (r.error) { out.innerHTML = '<div class="bad">Error: ' + escapeHtml(r.error) + '</div>'; return; }
+  out.innerHTML = '<div class="' + (r.verified ? 'ok' : 'bad') + '">'
+    + (r.verified ? '✓ Valid' : '✗ Invalid') + '</div><pre>'
+    + escapeHtml(JSON.stringify(r, null, 2)) + '</pre>';
+});
+
+// ----- helpers -----
+function download(name, bytes) {
+  const blob = new Blob([bytes], { type: 'application/octet-stream' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = name; a.click();
+  URL.revokeObjectURL(url);
+}
+function downloadText(name, text) {
+  download(name, new TextEncoder().encode(text));
+}
+function escapeHtml(s) {
+  return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+}
+</script>
+</body>
+</html>

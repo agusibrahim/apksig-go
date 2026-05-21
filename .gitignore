@@ -1,0 +1,21 @@
+# Build artefacts
+/bin/
+*.wasm
+*.test
+*.out
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Test fixtures we don't ship by default (delete the whole testdata/apk if you
+# add private APKs you don't want pushed publicly).
+# Comment out the next line if you want to include the F-Droid fixture in the
+# repository.
+/testdata/apk/
+
+# Stress-test logs
+/tmp/
+*-cross-*.log
