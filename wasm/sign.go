@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"strings"
 	"syscall/js"
 	"time"
 
@@ -369,6 +370,9 @@ func injectV1WASM(src datasource.DataSource, priv crypto.PrivateKey, cert *x509.
 	var buf bytes.Buffer
 	ww := zip.NewWriter(&buf)
 	for _, f := range zr.File {
+		if isV1SigFile(f.Name) {
+			continue
+		}
 		rc, err := f.Open()
 		if err != nil {
 			return nil, err
@@ -399,4 +403,18 @@ func injectV1WASM(src datasource.DataSource, priv crypto.PrivateKey, cert *x509.
 		return nil, err
 	}
 	return datasource.NewBytes(buf.Bytes()), nil
+}
+
+func isV1SigFile(name string) bool {
+	if !strings.HasPrefix(name, "META-INF/") {
+		return false
+	}
+	if name == "META-INF/MANIFEST.MF" {
+		return true
+	}
+	if strings.HasSuffix(name, ".SF") || strings.HasSuffix(name, ".RSA") ||
+		strings.HasSuffix(name, ".DSA") || strings.HasSuffix(name, ".EC") {
+		return true
+	}
+	return false
 }

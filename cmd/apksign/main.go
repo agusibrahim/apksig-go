@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/agusibrahim/apksig-go/pkg/algo"
 	"github.com/agusibrahim/apksig-go/pkg/apkwriter"
@@ -218,6 +219,9 @@ func injectV1(src datasource.DataSource, priv crypto.PrivateKey, cert *x509.Cert
 	var buf bytes.Buffer
 	ww := zip.NewWriter(&buf)
 	for _, f := range zr.File {
+		if isV1SignatureFile(f.Name) {
+			continue // strip old v1 signature files
+		}
 		rc, err := f.Open()
 		if err != nil {
 			return nil, err
@@ -248,4 +252,18 @@ func injectV1(src datasource.DataSource, priv crypto.PrivateKey, cert *x509.Cert
 		return nil, err
 	}
 	return datasource.NewBytes(buf.Bytes()), nil
+}
+
+func isV1SignatureFile(name string) bool {
+	if !strings.HasPrefix(name, "META-INF/") {
+		return false
+	}
+	if name == "META-INF/MANIFEST.MF" {
+		return true
+	}
+	if strings.HasSuffix(name, ".SF") || strings.HasSuffix(name, ".RSA") ||
+		strings.HasSuffix(name, ".DSA") || strings.HasSuffix(name, ".EC") {
+		return true
+	}
+	return false
 }
