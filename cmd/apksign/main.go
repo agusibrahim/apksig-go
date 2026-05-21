@@ -24,6 +24,7 @@ import (
 	"github.com/agusibrahim/apksig-go/pkg/apksigblock"
 	"github.com/agusibrahim/apksig-go/pkg/apkwriter"
 	"github.com/agusibrahim/apksig-go/pkg/datasource"
+	"github.com/agusibrahim/apksig-go/pkg/keystore"
 	"github.com/agusibrahim/apksig-go/pkg/signer"
 	"github.com/agusibrahim/apksig-go/pkg/v1signer"
 	"github.com/agusibrahim/apksig-go/pkg/v4signer"
@@ -33,6 +34,10 @@ import (
 func main() {
 	keyPath := flag.String("key", "", "PEM-encoded PKCS#8 (or RSA) private key")
 	certPath := flag.String("cert", "", "PEM-encoded X.509 certificate")
+	ksPath := flag.String("keystore", "", "JKS or PKCS#12 keystore file (alternative to -key/-cert)")
+	storePass := flag.String("storepass", "", "keystore password (use env:NAME or file:PATH to avoid shell history)")
+	keyPass := flag.String("keypass", "", "key entry password (defaults to -storepass; same env:/file: prefixes)")
+	alias := flag.String("alias", "", "key entry alias inside the keystore (defaults to first key entry)")
 	in := flag.String("in", "", "input APK")
 	out := flag.String("out", "", "output APK")
 	v3 := flag.Bool("v3", true, "also write a v3 signature")
@@ -46,18 +51,53 @@ func main() {
 	v1 := flag.Bool("v1", false, "also write a v1 (JAR) signature")
 	align := flag.Bool("align", false, "4-byte align uncompressed ZIP entries (zipalign)")
 	flag.Parse()
-	if *keyPath == "" || *certPath == "" || *in == "" || *out == "" {
+	if *in == "" || *out == "" || (*ksPath == "" && (*keyPath == "" || *certPath == "")) {
 		fmt.Fprintln(os.Stderr, "usage: apksign -key key.pem -cert cert.pem -in in.apk -out out.apk")
+		fmt.Fprintln(os.Stderr, "   or: apksign -keystore key.jks -storepass <pass> [-alias name] -in in.apk -out out.apk")
 		os.Exit(2)
 	}
 
-	priv, err := loadPrivateKey(*keyPath)
-	if err != nil {
-		fatal("key: %v", err)
-	}
-	cert, err := loadCertificate(*certPath)
-	if err != nil {
-		fatal("cert: %v", err)
+	var (
+		priv crypto.PrivateKey
+		cert *x509.Certificate
+		err  error
+	)
+	if *ksPath != "" {
+		sp, err := resolvePassword(*storePass)
+		if err != nil {
+			fatal("storepass: %v", err)
+		}
+		kp := *keyPass
+		if kp == "" {
+			kp = *storePass
+		}
+		kpv, err := resolvePassword(kp)
+		if err != nil {
+			fatal("keypass: %v", err)
+		}
+		ksData, err := os.ReadFile(*ksPath)
+		if err != nil {
+			fatal("read keystore: %v", err)
+		}
+		entry, err := keystore.Load(ksData, keystore.LoadOpts{
+			StorePass: sp,
+			KeyPass:   kpv,
+			Alias:     *alias,
+		})
+		if err != nil {
+			fatal("keystore: %v", err)
+		}
+		priv = entry.PrivateKey
+		cert = entry.Cert
+	} else {
+		priv, err = loadPrivateKey(*keyPath)
+		if err != nil {
+			fatal("key: %v", err)
+		}
+		cert, err = loadCertificate(*certPath)
+		if err != nil {
+			fatal("cert: %v", err)
+		}
 	}
 
 	alg, err := algo.PickAlgorithm(priv)
@@ -189,6 +229,24 @@ func loadCertificate(path string) (*x509.Certificate, error) {
 }
 
 func fatal(f string, a ...any) { fmt.Fprintf(os.Stderr, "apksign: "+f+"\n", a...); os.Exit(2) }
+
+// resolvePassword returns the literal password unless prefixed with env: or
+// file:, in which case the value is read from the environment or a file. The
+// trailing newline of file content is stripped so files written by `echo`
+// behave as expected. An empty input returns an empty password.
+func resolvePassword(spec string) (string, error) {
+	if strings.HasPrefix(spec, "env:") {
+		return os.Getenv(strings.TrimPrefix(spec, "env:")), nil
+	}
+	if strings.HasPrefix(spec, "file:") {
+		data, err := os.ReadFile(strings.TrimPrefix(spec, "file:"))
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimRight(string(data), "\r\n"), nil
+	}
+	return spec, nil
+}
 
 func injectV1(src datasource.DataSource, priv crypto.PrivateKey, cert *x509.Certificate) (datasource.DataSource, error) {
 	eocd, err := zippkg.FindEOCD(src)
