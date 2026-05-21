@@ -285,11 +285,11 @@ document.querySelectorAll('.tab').forEach(btn => {
 // ----- WASM bootstrap -----
 const go = new Go();
 let wasmReady = false;
-WebAssembly.instantiateStreaming(fetch('apksig.wasm'), go.importObject)
+WebAssembly.instantiateStreaming(fetch('apksig.wasm?v=' + Date.now()), go.importObject)
   .then(r => {
     go.run(r.instance);
     wasmReady = true;
-    statusBar.textContent = 'Ready.';
+    statusBar.textContent = 'Ready. (v' + (typeof apksigVersion !== 'undefined' ? apksigVersion : '?') + ')';
     document.getElementById('sign-btn').disabled = false;
     document.getElementById('kg-btn').disabled = false;
     document.getElementById('v4-btn').disabled = false;

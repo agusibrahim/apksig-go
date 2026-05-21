@@ -24,6 +24,7 @@ func main() {
 	js.Global().Set("apksigSign", js.FuncOf(sign))
 	js.Global().Set("apksigVerifyV4", js.FuncOf(verifyV4))
 	js.Global().Set("apksigGenerateKey", js.FuncOf(generateKey))
+	js.Global().Set("apksigVersion", "2025.05.21b")
 	// Keep the Go runtime alive so the exported function stays callable.
 	select {}
 }
