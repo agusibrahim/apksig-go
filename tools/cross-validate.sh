@@ -2,8 +2,16 @@
 # Cross-validates apksig-go vs apksigner over a directory of APKs.
 # Usage: ./tools/cross-validate.sh /path/to/apks/
 set -u
-dir="${1:-/Users/macbook/Downloads}"
-gocmd="/Users/macbook/Downloads/apksig-go/bin/apksigverify"
+dir="${1:-.}"
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+gocmd="${script_dir}/../bin/apksigverify"
+if [ ! -x "$gocmd" ]; then
+  gocmd="$(command -v apksigverify 2>/dev/null)" || true
+fi
+if [ -z "$gocmd" ]; then
+  echo "error: apksigverify not found. Run 'go build ./cmd/...' first." >&2
+  exit 1
+fi
 
 pass=0
 fail=0
