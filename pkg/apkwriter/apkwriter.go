@@ -162,11 +162,34 @@ func (sw *SignedAPKWriter) buildAligned(beforeEnd int64, eocd *zippkg.EOCD) (dat
 
 	for i, e := range entries {
 		newOffsets[i] = outOffset
-		n, err := zippkg.WriteAlignedEntry(&entryBuf, sw.Src, &entries[i], &plans[i], outOffset)
-		if err != nil {
-			return nil, nil, fmt.Errorf("align entry %s: %w", e.Name, err)
+		if e.CompressionMethod != 0 {
+			// Compressed entry: copy raw bytes verbatim (no LFH rewrite).
+			entrySize := plans[i].OriginalLFHSize + plans[i].DataSize
+			n, err := copyDS(&entryBuf, sw.Src.Slice(plans[i].EntryStart, entrySize))
+			if err != nil {
+				return nil, nil, fmt.Errorf("copy entry %s: %w", e.Name, err)
+			}
+			outOffset += n
+		} else {
+			// Stored entry: check if data is already 4-byte aligned at the
+			// output position. If so, copy verbatim to preserve page alignment
+			// that may already exist for .so files.
+			dataOff := outOffset + plans[i].OriginalLFHSize
+			if dataOff%4 == 0 {
+				entrySize := plans[i].OriginalLFHSize + plans[i].DataSize
+				n, err := copyDS(&entryBuf, sw.Src.Slice(plans[i].EntryStart, entrySize))
+				if err != nil {
+					return nil, nil, fmt.Errorf("copy entry %s: %w", e.Name, err)
+				}
+				outOffset += n
+			} else {
+				n, err := zippkg.WriteAlignedEntry(&entryBuf, sw.Src, &entries[i], &plans[i], outOffset)
+				if err != nil {
+					return nil, nil, fmt.Errorf("align entry %s: %w", e.Name, err)
+				}
+				outOffset += n
+			}
 		}
-		outOffset += n
 	}
 
 	// Read original CD and patch LFH offsets

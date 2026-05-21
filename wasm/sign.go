@@ -364,12 +364,6 @@ func injectV1WASM(src datasource.DataSource, priv crypto.PrivateKey, cert *x509.
 		return nil, err
 	}
 
-	beforeEnd := eocd.CDStartOffset
-	if blk, err := apksigblock.Find(src, eocd); err == nil {
-		beforeEnd = blk.StartOffset
-	}
-	fmt.Printf("injectV1WASM: srcSize=%d cdOff=%d beforeEnd=%d entries=%d\n", src.Size(), eocd.CDStartOffset, beforeEnd, len(entries))
-
 	var entryEnd int64 = eocd.CDStartOffset
 	if blk2, err2 := apksigblock.Find(src, eocd); err2 == nil {
 		entryEnd = blk2.StartOffset
