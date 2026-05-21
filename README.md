@@ -266,7 +266,8 @@ A cross-validation script is also provided:
 
 ## Compatibility
 
-- Go ≥ 1.21
+- Go ≥ 1.23 (the `//go:debug x509negativeserial=1` directive used by the
+  CLIs requires Go 1.23+; library packages alone work on earlier versions)
 - WASM target: any modern browser, Node.js ≥ 16
 - Tested on darwin/arm64; no platform-specific code
 
