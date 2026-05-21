@@ -77,8 +77,12 @@ func makeResult(r *apkverifier.Result) map[string]interface{} {
 		"hasV2Block":  r.HasV2Block,
 		"hasV3Block":  r.HasV3Block,
 		"hasV31Block": r.HasV31Block,
+		"aligned4KB":  r.Aligned4KB,
 		"errors":      stringsToAny(r.Errors),
 		"warnings":    stringsToAny(r.Warnings),
+	}
+	if len(r.MisalignedFiles) > 0 {
+		out["misalignedFiles"] = stringsToAny(r.MisalignedFiles)
 	}
 	var signers []interface{}
 	if r.V3 != nil {

@@ -27,22 +27,26 @@ import (
 
 // Result summarises verification across schemes.
 type Result struct {
-	Verified         bool
-	V1Verified       bool
-	V2Verified       bool
-	V3Verified       bool
-	V31Verified      bool
-	HasV2Block       bool
-	HasV3Block       bool
-	HasV31Block      bool
-	V2               *v2pkg.Result
-	V3               *v3pkg.Result
-	V31              *v3pkg.Result
-	V1               *v1pkg.Result
-	DetectedMinSdk   int
-	Errors           []string
-	Warnings         []string
-	SignerCerts      [][]byte // Encoded x509 of the apparent signer(s) (DER)
+	Verified       bool
+	V1Verified     bool
+	V2Verified     bool
+	V3Verified     bool
+	V31Verified    bool
+	HasV2Block     bool
+	HasV3Block     bool
+	HasV31Block    bool
+	V2             *v2pkg.Result
+	V3             *v3pkg.Result
+	V31            *v3pkg.Result
+	V1             *v1pkg.Result
+	DetectedMinSdk int
+	Errors         []string
+	Warnings       []string
+	SignerCerts    [][]byte // Encoded x509 of the apparent signer(s) (DER)
+
+	// Alignment info for uncompressed entries.
+	Aligned4KB    bool     // true if all uncompressed .so entries are 4KB-aligned
+	MisalignedFiles []string // entries that failed 4KB alignment check
 }
 
 // V1Result is a placeholder kept for backwards compat with earlier scaffolding.
@@ -167,6 +171,12 @@ func Verify(ds datasource.DataSource, minSdk, maxSdk int) (*Result, error) {
 					effectiveMin))
 		}
 	}
+
+	// Check 4KB page alignment for uncompressed .so entries.
+	if len(cdEntries) > 0 {
+		checkAlignment(ds, cdEntries, res)
+	}
+
 	return res, nil
 }
 
@@ -187,6 +197,29 @@ func detectAPKMinSdk(ds datasource.DataSource, entries []zippkg.CDEntry) int {
 		}
 	}
 	return 0
+}
+
+func checkAlignment(ds datasource.DataSource, entries []zippkg.CDEntry, res *Result) {
+	allAligned := true
+	for i := range entries {
+		e := &entries[i]
+		// Only check uncompressed entries with .so extension
+		if e.CompressionMethod != 0 || len(e.Name) < 4 || e.Name[len(e.Name)-3:] != ".so" {
+			continue
+		}
+		dataOff, err := zippkg.EntryDataOffset(ds, e)
+		if err != nil {
+			continue
+		}
+		if dataOff%4096 != 0 {
+			allAligned = false
+			res.MisalignedFiles = append(res.MisalignedFiles, e.Name)
+		}
+	}
+	if len(res.MisalignedFiles) > 0 {
+		allAligned = false
+	}
+	res.Aligned4KB = allAligned
 }
 
 func mayFindPair(b *apksigblock.Block, id uint32) *apksigblock.Pair {

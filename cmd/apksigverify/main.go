@@ -44,6 +44,13 @@ func main() {
 	fmt.Printf("  v3:   present=%v verified=%v\n", res.HasV3Block, res.V3Verified)
 	fmt.Printf("  v2:   present=%v verified=%v\n", res.HasV2Block, res.V2Verified)
 	fmt.Printf("  v1:   verified=%v\n", res.V1Verified)
+	fmt.Printf("  align: 4KB=%v\n", res.Aligned4KB)
+	if len(res.MisalignedFiles) > 0 {
+		fmt.Printf("    misaligned .so files (%d):\n", len(res.MisalignedFiles))
+		for _, f := range res.MisalignedFiles {
+			fmt.Printf("      %s\n", f)
+		}
+	}
 	for _, e := range res.Errors {
 		fmt.Printf("ERROR: %s\n", e)
 	}

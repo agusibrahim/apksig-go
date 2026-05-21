@@ -319,7 +319,12 @@ function renderVerify(target, r, name, dt) {
   html += schemeBox('v2',  r.v2Verified, r.hasV2Block);
   html += schemeBox('v3',  r.v3Verified, r.hasV3Block);
   html += schemeBox('v3.1',r.v31Verified, r.hasV31Block);
+  html += schemeBox('4KB align', r.aligned4KB, r.aligned4KB);
   html += '</div>';
+  if (r.misalignedFiles && r.misalignedFiles.length) {
+    html += '<div class="warn">Misaligned .so files (' + r.misalignedFiles.length +
+            '): install may fail on Android</div>';
+  }
   if (r.signers && r.signers.length) {
     html += '<h3>Signers</h3>';
     for (const s of r.signers) {
