@@ -47,6 +47,7 @@ func sign(this js.Value, args []js.Value) interface{} {
 	v31Enabled := getBool(opts, "v31", false)
 	v4Enabled := getBool(opts, "v4", false)
 	v1Enabled := getBool(opts, "v1", false)
+	alignEnabled := getBool(opts, "align", false)
 	v3Min := getInt(opts, "v3MinSdk", 28)
 	v3Max := getInt(opts, "v3MaxSdk", 0x7fffffff)
 	v31Min := getInt(opts, "v31MinSdk", 33)
@@ -93,6 +94,7 @@ func sign(this js.Value, args []js.Value) interface{} {
 		w.V31MinSdk = int32(v31Min)
 		w.V31MaxSdk = int32(v31Max)
 	}
+	w.Align = alignEnabled
 
 	buf := &byteBuffer{}
 	if err := w.Write(buf); err != nil {

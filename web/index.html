@@ -149,9 +149,11 @@
 
     <h3>Signing schemes</h3>
     <div class="row">
+      <div><label><input type="checkbox" id="opt-v1"> v1 (JAR signing)</label></div>
       <div><label><input type="checkbox" id="opt-v3" checked> v3 signature</label></div>
       <div><label><input type="checkbox" id="opt-v31"> v3.1 (rotation)</label></div>
       <div><label><input type="checkbox" id="opt-v4"> v4 (.idsig file)</label></div>
+      <div><label><input type="checkbox" id="opt-align"> zipalign (4-byte)</label></div>
     </div>
 
     <details style="margin-top:8px">
@@ -234,9 +236,11 @@ const result = apksigVerify(uint8Array, { minSdk: 24, maxSdk: 35 });
 
 // 2. Sign
 const { signedApk, idsig } = apksigSign(apkBytes, keyPEM, certPEM, {
+  v1: false,       // JAR signing (for Android < 7)
   v3: true,
-  v31: false,
-  v4: false,
+  v31: false,      // v3.1 key rotation
+  v4: false,       // .idsig file
+  align: false,    // 4-byte alignment
   v3MinSdk: 28,
   v31MinSdk: 33,
 });
@@ -358,9 +362,11 @@ document.getElementById('sign-btn').addEventListener('click', async () => {
   if (!keyPEM || !certPEM) { out.innerHTML = '<div class="bad">Provide both key and certificate.</div>'; return; }
 
   const opts = {
+    v1: document.getElementById('opt-v1').checked,
     v3: document.getElementById('opt-v3').checked,
     v31: document.getElementById('opt-v31').checked,
     v4: document.getElementById('opt-v4').checked,
+    align: document.getElementById('opt-align').checked,
     v3MinSdk: parseInt(document.getElementById('opt-v3min').value, 10),
     v3MaxSdk: parseInt(document.getElementById('opt-v3max').value, 10),
     v31MinSdk: parseInt(document.getElementById('opt-v31min').value, 10),
@@ -455,9 +461,17 @@ document.getElementById('v4-btn').addEventListener('click', () => {
   if (!v4Apk || !v4Idsig) { out.innerHTML = '<div class="bad">Pick both files.</div>'; return; }
   const r = apksigVerifyV4(v4Apk, v4Idsig);
   if (r.error) { out.innerHTML = '<div class="bad">Error: ' + escapeHtml(r.error) + '</div>'; return; }
-  out.innerHTML = '<div class="' + (r.verified ? 'ok' : 'bad') + '">'
-    + (r.verified ? '✓ Valid' : '✗ Invalid') + '</div><pre>'
-    + escapeHtml(JSON.stringify(r, null, 2)) + '</pre>';
+  let v4html = '<div class="' + (r.verified ? 'ok' : 'bad') + '">'
+    + (r.verified ? '✓ Valid' : '✗ Invalid') + '</div>';
+  v4html += '<pre>' + escapeHtml(JSON.stringify(r, null, 2)) + '</pre>';
+  if (r.extraBlocks && r.extraBlocks.length) {
+    v4html += '<h3>v4.1 Additional Signers</h3>';
+    for (const b of r.extraBlocks) {
+      v4html += '<div class="' + (b.verified ? 'ok' : 'bad') + '">Block 0x'
+        + b.blockId.toString(16) + ': ' + (b.verified ? '✓ verified' : '✗ ' + (b.error||'failed')) + '</div>';
+    }
+  }
+  out.innerHTML = v4html;
 });
 
 // ----- helpers -----
