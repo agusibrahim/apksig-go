@@ -48,6 +48,15 @@ type Config struct {
 	Salt []byte
 	// Optional override of additionalData (free-form, signed). Default empty.
 	AdditionalData []byte
+
+	// V4.1 secondary signer (key rotation / v3.1). When set, a
+	// SigningInfoBlock with the given BlockID is appended after the primary
+	// SigningInfo inside signingInfos. The secondary signer's apkDigest is
+	// read from the v3.1 signing block.
+	V41BlockID     uint32
+	V41PrivateKey  crypto.PrivateKey
+	V41Cert        *x509.Certificate
+	V41Algorithm   algo.Algorithm
 }
 
 // Sign reads the entire APK from src and returns the .idsig file bytes.
@@ -94,14 +103,45 @@ func Sign(src datasource.DataSource, cfg *Config) ([]byte, error) {
 		return nil, fmt.Errorf("v4signer: sign: %w", err)
 	}
 
-	// 4. Encode hashingInfo + signingInfo
+	// 4. Encode hashingInfo + signingInfo(s)
 	hashingInfo := encodeHashingInfo(hashAlgSHA256, log2BlockSize, salt, rootHash)
 	signingInfo := encodeSigningInfo(apkDigest, certDER, cfg.AdditionalData, pubKeyDER, uint32(cfg.Algorithm.ID), sig)
 
-	out := make([]byte, 0, 4+4+len(hashingInfo)+4+len(signingInfo))
-	out = appendU32(out, 2) // version
+	// Build signingInfos: primary SigningInfo raw, then optional SigningInfoBlocks.
+	signingInfos := signingInfo
+
+	if cfg.V41PrivateKey != nil && cfg.V41Cert != nil {
+		v41Digest, err := readContentDigestByID(src, apksigblock.IDV31Signature, cfg.V41Algorithm)
+		if err != nil {
+			return nil, fmt.Errorf("v4.1: read v3.1 digest: %w", err)
+		}
+		v41CertDER := cfg.V41Cert.Raw
+		v41PubKeyDER, err := x509.MarshalPKIXPublicKey(cfg.V41Cert.PublicKey)
+		if err != nil {
+			return nil, fmt.Errorf("v4.1: marshal pubkey: %w", err)
+		}
+		v41SignedData := buildSignedData(int64(len(apkBytes)), hashAlgSHA256, log2BlockSize, salt, rootHash, v41Digest, v41CertDER, nil)
+		v41Sig, err := cfg.V41Algorithm.Sign(cfg.V41PrivateKey, v41SignedData)
+		if err != nil {
+			return nil, fmt.Errorf("v4.1: sign: %w", err)
+		}
+		v41SigningInfo := encodeSigningInfo(v41Digest, v41CertDER, nil, v41PubKeyDER, uint32(cfg.V41Algorithm.ID), v41Sig)
+
+		// SigningInfoBlock: blockID(u32) + LP(signingInfo)
+		blockID := cfg.V41BlockID
+		if blockID == 0 {
+			blockID = apksigblock.IDV31Signature
+		}
+		var block []byte
+		block = appendU32(block, blockID)
+		block = appendLP(block, v41SigningInfo)
+		signingInfos = append(signingInfos, block...)
+	}
+
+	out := make([]byte, 0, 4+4+len(hashingInfo)+4+len(signingInfos))
+	out = appendU32(out, 2) // version (stays 2 for v4.1)
 	out = appendLP(out, hashingInfo)
-	out = appendLP(out, signingInfo)
+	out = appendLP(out, signingInfos)
 	return out, nil
 }
 
@@ -134,6 +174,30 @@ func readContentDigest(src datasource.DataSource, a algo.Algorithm) ([]byte, err
 		return dg, nil
 	}
 	return nil, errors.New("no v3/v2 signing block content digest found for requested algorithm")
+}
+
+// readContentDigestByID reads the content digest from a specific signing block ID.
+func readContentDigestByID(src datasource.DataSource, blockID uint32, a algo.Algorithm) ([]byte, error) {
+	eocd, err := zippkg.FindEOCD(src)
+	if err != nil {
+		return nil, err
+	}
+	block, err := apksigblock.Find(src, eocd)
+	if err != nil {
+		return nil, err
+	}
+	p := block.FindPair(blockID)
+	if p == nil {
+		return nil, fmt.Errorf("no signing block pair for ID %#x", blockID)
+	}
+	dg, err := extractDigest(p.Value, a, true)
+	if err != nil {
+		return nil, err
+	}
+	if dg == nil {
+		return nil, fmt.Errorf("no digest matching alg %#x in block %#x", uint32(a.ID), blockID)
+	}
+	return dg, nil
 }
 
 // extractDigest pulls the per-algorithm digest out of the first signer's

@@ -88,11 +88,17 @@ func sign(this js.Value, args []js.Value) interface{} {
 
 	if v4Enabled {
 		signedSrc := datasource.NewBytes(buf.b)
-		idsig, err := v4signer.Sign(signedSrc, &v4signer.Config{
+		v4cfg := &v4signer.Config{
 			PrivateKey: priv,
 			Cert:       cert,
 			Algorithm:  alg,
-		})
+		}
+		if v31Enabled {
+			v4cfg.V41PrivateKey = priv
+			v4cfg.V41Cert = cert
+			v4cfg.V41Algorithm = alg
+		}
+		idsig, err := v4signer.Sign(signedSrc, v4cfg)
 		if err != nil {
 			out["v4Error"] = err.Error()
 		} else {
@@ -128,6 +134,26 @@ func verifyV4(this js.Value, args []js.Value) interface{} {
 			"issuer":  res.Cert.Issuer.String(),
 			"sha256":  sha256Hex(res.Cert.Raw),
 		}
+	}
+	if len(res.ExtraBlocks) > 0 {
+		var blocks []interface{}
+		for _, eb := range res.ExtraBlocks {
+			block := map[string]interface{}{
+				"blockId":  int(eb.BlockID),
+				"verified": eb.Verified,
+			}
+			if eb.Cert != nil {
+				block["cert"] = map[string]interface{}{
+					"subject": eb.Cert.Subject.String(),
+					"sha256":  sha256Hex(eb.Cert.Raw),
+				}
+			}
+			if eb.Error != "" {
+				block["error"] = eb.Error
+			}
+			blocks = append(blocks, block)
+		}
+		out["extraBlocks"] = blocks
 	}
 	return out
 }

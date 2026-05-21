@@ -48,6 +48,15 @@ func main() {
 	if !res.Verified {
 		os.Exit(1)
 	}
+	for i, eb := range res.ExtraBlocks {
+		fmt.Printf("  v4.1 block[%d]: id=%#x verified=%v\n", i, eb.BlockID, eb.Verified)
+		if eb.Cert != nil {
+			fmt.Printf("    cert subject: %s\n", eb.Cert.Subject)
+		}
+		if eb.Error != "" {
+			fmt.Printf("    error: %s\n", eb.Error)
+		}
+	}
 }
 
 func fail(f string, a ...any) { fmt.Fprintf(os.Stderr, "apksigverifyv4: "+f+"\n", a...); os.Exit(2) }

@@ -35,6 +35,16 @@ import (
 	"github.com/agusibrahim/apksig-go/pkg/x509util"
 )
 
+// SigningInfoBlock holds an additional signer in a v4.1 .idsig file.
+type SigningInfoBlock struct {
+	BlockID      uint32
+	APKDigest    []byte
+	Cert         *x509.Certificate
+	SignatureAlgo algo.SigID
+	Verified     bool
+	Error        string
+}
+
 // Result is the outcome of v4 verification.
 type Result struct {
 	Verified           bool
@@ -46,6 +56,8 @@ type Result struct {
 	Cert               *x509.Certificate
 	SignatureAlgorithm algo.SigID
 	Errors             []string
+	// V4.1 additional signers (key rotation / v3.1 block).
+	ExtraBlocks []SigningInfoBlock
 }
 
 // Parse reads and verifies a v4 .idsig blob. The caller passes the file size of
@@ -141,6 +153,91 @@ func Parse(idsig []byte, apkFileSize int64) (*Result, error) {
 		// Not fatal; many real .idsig files match exactly so we surface as warning.
 	}
 	res.Verified = true
+
+	// Parse additional SigningInfoBlocks (v4.1 dual-signer).
+	for sr.off < len(sr.b) {
+		blockID, err := sr.u32()
+		if err != nil {
+			break
+		}
+		blockSIBytes, err := sr.lpBytes()
+		if err != nil {
+			res.Errors = append(res.Errors, fmt.Sprintf("v4.1 block %#x: %v", blockID, err))
+			break
+		}
+		eb := SigningInfoBlock{BlockID: blockID}
+
+		bir := newLEReader(blockSIBytes)
+		biAPKDigest, err := bir.lpBytes()
+		if err != nil {
+			eb.Error = fmt.Sprintf("apkDigest: %v", err)
+			res.ExtraBlocks = append(res.ExtraBlocks, eb)
+			continue
+		}
+		biCertDER, err := bir.lpBytes()
+		if err != nil {
+			eb.Error = fmt.Sprintf("certificate: %v", err)
+			res.ExtraBlocks = append(res.ExtraBlocks, eb)
+			continue
+		}
+		biAdditional, err := bir.lpBytes()
+		if err != nil {
+			eb.Error = fmt.Sprintf("additionalData: %v", err)
+			res.ExtraBlocks = append(res.ExtraBlocks, eb)
+			continue
+		}
+		biPubKeyDER, err := bir.lpBytes()
+		if err != nil {
+			eb.Error = fmt.Sprintf("publicKey: %v", err)
+			res.ExtraBlocks = append(res.ExtraBlocks, eb)
+			continue
+		}
+		biSigAlgID, err := bir.u32()
+		if err != nil {
+			eb.Error = fmt.Sprintf("sigAlgID: %v", err)
+			res.ExtraBlocks = append(res.ExtraBlocks, eb)
+			continue
+		}
+		biSignature, err := bir.lpBytes()
+		if err != nil {
+			eb.Error = fmt.Sprintf("signature: %v", err)
+			res.ExtraBlocks = append(res.ExtraBlocks, eb)
+			continue
+		}
+
+		biCert, err := x509util.ParseCertificate(biCertDER)
+		if err != nil {
+			eb.Error = fmt.Sprintf("parse cert: %v", err)
+			res.ExtraBlocks = append(res.ExtraBlocks, eb)
+			continue
+		}
+
+		eb.APKDigest = biAPKDigest
+		eb.Cert = biCert
+		eb.SignatureAlgo = algo.SigID(biSigAlgID)
+
+		biAlg, ok := algo.ByID(algo.SigID(biSigAlgID))
+		if !ok {
+			eb.Error = fmt.Sprintf("unsupported sig algorithm %#x", biSigAlgID)
+			res.ExtraBlocks = append(res.ExtraBlocks, eb)
+			continue
+		}
+
+		biSignedData := buildSignedData(apkFileSize, uint32(res.HashAlgorithm), res.Log2BlockSize, res.Salt, res.RawRootHash, biAPKDigest, biCertDER, biAdditional)
+		if err := biAlg.Verify(biCert.PublicKey, biSignedData, biSignature); err != nil {
+			eb.Error = fmt.Sprintf("verify signature: %v", err)
+		} else {
+			eb.Verified = true
+		}
+
+		// Sanity check publicKey matches cert.
+		if biSPKI, err := x509.MarshalPKIXPublicKey(biCert.PublicKey); err == nil && len(biPubKeyDER) > 0 && string(biSPKI) != string(biPubKeyDER) {
+			// Non-fatal.
+		}
+
+		res.ExtraBlocks = append(res.ExtraBlocks, eb)
+	}
+
 	return res, nil
 }
 

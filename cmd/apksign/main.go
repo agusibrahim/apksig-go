@@ -107,11 +107,17 @@ func main() {
 		signedSt, _ := signedF.Stat()
 		signedDS := datasource.NewReaderAt(signedF, signedSt.Size())
 
-		idsig, err := v4signer.Sign(signedDS, &v4signer.Config{
+		v4cfg := &v4signer.Config{
 			PrivateKey: priv,
 			Cert:       cert,
 			Algorithm:  alg,
-		})
+		}
+		if *v31 {
+			v4cfg.V41PrivateKey = priv
+			v4cfg.V41Cert = cert
+			v4cfg.V41Algorithm = alg
+		}
+		idsig, err := v4signer.Sign(signedDS, v4cfg)
 		if err != nil {
 			fatal("v4 sign: %v", err)
 		}
