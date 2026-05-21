@@ -42,6 +42,7 @@ func main() {
 	v4 := flag.Bool("v4", false, "also write a .idsig (v4) file alongside the output APK")
 	v4Out := flag.String("v4-out", "", "v4 .idsig output path; defaults to <out>.idsig")
 	v1 := flag.Bool("v1", false, "also write a v1 (JAR) signature")
+	align := flag.Bool("align", false, "4-byte align uncompressed ZIP entries (zipalign)")
 	flag.Parse()
 	if *keyPath == "" || *certPath == "" || *in == "" || *out == "" {
 		fmt.Fprintln(os.Stderr, "usage: apksign -key key.pem -cert cert.pem -in in.apk -out out.apk")
@@ -104,6 +105,7 @@ func main() {
 		w.V31MinSdk = int32(*v31Min)
 		w.V31MaxSdk = int32(*v31Max)
 	}
+	w.Align = *align
 	if err := w.Write(outF); err != nil {
 		fatal("write: %v", err)
 	}

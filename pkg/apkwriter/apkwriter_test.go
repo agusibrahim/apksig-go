@@ -159,3 +159,66 @@ func TestSignerCertSurvivesRoundTrip(t *testing.T) {
 			len(res.SignerCerts[0]), len(cert.Raw))
 	}
 }
+
+func TestAlign_VerifiesAfterSigning(t *testing.T) {
+	apk := makeUnsignedAPK(t)
+	priv, cert := makeKeyAndCert(t, false)
+	a, _ := algo.ByID(algo.SigRSAPKCS1SHA256)
+	cfg := &signer.SignerConfig{
+		PrivateKey: priv, Certs: []*x509.Certificate{cert},
+		Algorithms: []algo.Algorithm{a},
+	}
+	w := &SignedAPKWriter{
+		Src:     datasource.NewBytes(apk),
+		Signers: []*signer.SignerConfig{cfg},
+		Align:   true,
+	}
+	var out bytes.Buffer
+	if err := w.Write(&out); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	res, err := apkverifier.Verify(datasource.NewBytes(out.Bytes()), 24, 35)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if !res.V2Verified {
+		t.Errorf("v2 should verify after alignment; errors=%v", res.Errors)
+	}
+}
+
+func TestAlign_DataOffsetAlignment(t *testing.T) {
+	// Create an APK with entries that will need alignment padding
+	var buf bytes.Buffer
+	w := zip.NewWriter(&buf)
+	// Short name (will likely need padding to align)
+	fw, _ := w.Create("a")
+	fw.Write([]byte("hello"))
+	// Another entry with different name length
+	fw2, _ := w.Create("ab")
+	fw2.Write([]byte("world"))
+	w.Close()
+
+	apk := buf.Bytes()
+	priv, cert := makeKeyAndCert(t, false)
+	a, _ := algo.ByID(algo.SigRSAPKCS1SHA256)
+	cfg := &signer.SignerConfig{
+		PrivateKey: priv, Certs: []*x509.Certificate{cert},
+		Algorithms: []algo.Algorithm{a},
+	}
+	wr := &SignedAPKWriter{
+		Src:     datasource.NewBytes(apk),
+		Signers: []*signer.SignerConfig{cfg},
+		Align:   true,
+	}
+	var out bytes.Buffer
+	if err := wr.Write(&out); err != nil {
+		t.Fatal(err)
+	}
+	res, err := apkverifier.Verify(datasource.NewBytes(out.Bytes()), 24, 35)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if !res.V2Verified {
+		t.Errorf("v2 should verify; errors=%v", res.Errors)
+	}
+}

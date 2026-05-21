@@ -5,6 +5,7 @@
 package apkwriter
 
 import (
+	"bytes"
 	"crypto/x509"
 	"encoding/binary"
 	"errors"
@@ -22,12 +23,6 @@ import (
 var _ = errors.New
 
 // SignedAPKWriter writes a signed APK out to w using src as the input.
-//
-// It will:
-//   1. Compute content digests for src as if any existing signing block were
-//      stripped (so re-signing is idempotent).
-//   2. Build the v2 (and optionally v3) signing block payloads.
-//   3. Stream original entry data + new signing block + CD + patched EOCD.
 type SignedAPKWriter struct {
 	Src     datasource.DataSource
 	Signers []*signer.SignerConfig
@@ -39,6 +34,11 @@ type SignedAPKWriter struct {
 	// written using the same Signers config; the v3 pair (if also requested)
 	// will have its maxSdk capped at V31MinSdk-1 for compatibility.
 	V31MinSdk, V31MaxSdk int32
+
+	// Align enables 4-byte alignment of uncompressed ZIP entries (zipalign).
+	// When true, the entry region is rewritten with alignment extra fields
+	// (0xd935) and CD offsets are patched accordingly.
+	Align bool
 }
 
 // Write streams a signed APK to w.
@@ -50,19 +50,12 @@ func (sw *SignedAPKWriter) Write(w io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("EOCD: %w", err)
 	}
-	// Determine where original ZIP entries end. If an APK Signing Block is
-	// already present, "before block" is its start; otherwise it's the
-	// stored CD offset.
 	beforeEnd := eocd.CDStartOffset
 	if blk, err := apksigblock.Find(sw.Src, eocd); err == nil {
 		beforeEnd = blk.StartOffset
 	}
 
-	beforeBlock := sw.Src.Slice(0, beforeEnd)
-	cd := sw.Src.Slice(eocd.CDStartOffset, eocd.CDSize)
-
 	patchedEOCD := append([]byte(nil), eocd.Bytes...)
-	// CD offset will be updated below once we know the signing block size.
 
 	// Build content digests covering the algorithms we're signing under.
 	algSet := map[algo.ContentDigest]struct{}{}
@@ -76,14 +69,35 @@ func (sw *SignedAPKWriter) Write(w io.Writer) error {
 		algos = append(algos, a)
 	}
 
-	// First pass: compute digests with EOCD's CD offset set to beforeEnd.
-	binary.LittleEndian.PutUint32(patchedEOCD[16:20], uint32(beforeEnd))
-	digests, err := digest.Compute(algos, beforeBlock, cd, patchedEOCD)
+	var (
+		entriesBeforeCD datasource.DataSource // aligned or raw entry region
+		cdBytes         []byte                // CD bytes (possibly patched)
+	)
+
+	if sw.Align {
+		entriesBeforeCD, cdBytes, err = sw.buildAligned(beforeEnd, eocd)
+		if err != nil {
+			return err
+		}
+	} else {
+		entriesBeforeCD = sw.Src.Slice(0, beforeEnd)
+		cdBytes, err = datasource.ReadAll(sw.Src.Slice(eocd.CDStartOffset, eocd.CDSize))
+		if err != nil {
+			return err
+		}
+	}
+
+	cdDS := datasource.NewBytes(cdBytes)
+
+	// Compute digests with EOCD's CD offset set to entriesBeforeCD size.
+	entrySize := entriesBeforeCD.Size()
+	binary.LittleEndian.PutUint32(patchedEOCD[16:20], uint32(entrySize))
+	digests, err := digest.Compute(algos, entriesBeforeCD, cdDS, patchedEOCD)
 	if err != nil {
 		return fmt.Errorf("compute digests: %w", err)
 	}
 
-	// Build v2 + v3 pairs.
+	// Build signing block pairs.
 	var pairs []signer.Pair
 	v2Value, err := buildSchemePair(sw.Signers, digests, false, sw.V3MinSdk, sw.V3MaxSdk)
 	if err != nil {
@@ -93,7 +107,6 @@ func (sw *SignedAPKWriter) Write(w io.Writer) error {
 
 	if sw.V3MinSdk != 0 || sw.V3MaxSdk != 0 {
 		v3Max := sw.V3MaxSdk
-		// If v3.1 is also being written, cap v3 maxSdk at v3.1 minSdk-1.
 		if sw.V31MinSdk != 0 && (v3Max == 0 || v3Max >= sw.V31MinSdk) {
 			v3Max = sw.V31MinSdk - 1
 		}
@@ -114,18 +127,17 @@ func (sw *SignedAPKWriter) Write(w io.Writer) error {
 
 	signingBlock := signer.AssembleSigningBlock(pairs)
 
-	// Stream output: original bytes [0..beforeEnd) + signingBlock + CD + EOCD'
-	if _, err := copyDS(w, beforeBlock); err != nil {
+	// Stream output.
+	if _, err := copyDS(w, entriesBeforeCD); err != nil {
 		return fmt.Errorf("copy entries: %w", err)
 	}
 	if _, err := w.Write(signingBlock); err != nil {
 		return fmt.Errorf("write signing block: %w", err)
 	}
-	if _, err := copyDS(w, cd); err != nil {
+	if _, err := w.Write(cdBytes); err != nil {
 		return fmt.Errorf("copy CD: %w", err)
 	}
-	// EOCD' has its CD offset = beforeEnd + len(signingBlock).
-	newCDOff := uint32(beforeEnd + int64(len(signingBlock)))
+	newCDOff := uint32(entrySize + int64(len(signingBlock)))
 	binary.LittleEndian.PutUint32(patchedEOCD[16:20], newCDOff)
 	if _, err := w.Write(patchedEOCD); err != nil {
 		return fmt.Errorf("write EOCD: %w", err)
@@ -133,9 +145,41 @@ func (sw *SignedAPKWriter) Write(w io.Writer) error {
 	return nil
 }
 
+// buildAligned produces an aligned entry region and patched CD bytes.
+func (sw *SignedAPKWriter) buildAligned(beforeEnd int64, eocd *zippkg.EOCD) (datasource.DataSource, []byte, error) {
+	entries, err := zippkg.ParseCD(sw.Src, eocd)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse CD: %w", err)
+	}
+	plans, _, err := zippkg.ComputeAlignPlan(sw.Src, entries)
+	if err != nil {
+		return nil, nil, fmt.Errorf("align plan: %w", err)
+	}
+
+	var entryBuf bytes.Buffer
+	newOffsets := make([]int64, len(entries))
+	var outOffset int64
+
+	for i, e := range entries {
+		newOffsets[i] = outOffset
+		n, err := zippkg.WriteAlignedEntry(&entryBuf, sw.Src, &entries[i], &plans[i], outOffset)
+		if err != nil {
+			return nil, nil, fmt.Errorf("align entry %s: %w", e.Name, err)
+		}
+		outOffset += n
+	}
+
+	// Read original CD and patch LFH offsets
+	cdBytes, err := datasource.ReadAll(sw.Src.Slice(eocd.CDStartOffset, eocd.CDSize))
+	if err != nil {
+		return nil, nil, err
+	}
+	patchedCD := zippkg.PatchCDOffsets(cdBytes, entries, newOffsets)
+
+	return datasource.NewBytes(entryBuf.Bytes()), patchedCD, nil
+}
+
 func buildSchemePair(signers []*signer.SignerConfig, digests map[algo.ContentDigest][]byte, isV3 bool, minSdk, maxSdk int32) ([]byte, error) {
-	// Each signer becomes a length-prefixed entry. The whole sequence is then
-	// length-prefixed once more.
 	var out []byte
 	for _, s := range signers {
 		var raw []byte
@@ -148,7 +192,6 @@ func buildSchemePair(signers []*signer.SignerConfig, digests map[algo.ContentDig
 		if err != nil {
 			return nil, err
 		}
-		// Length-prefix the per-signer payload.
 		entry := make([]byte, 4+len(raw))
 		binary.LittleEndian.PutUint32(entry[:4], uint32(len(raw)))
 		copy(entry[4:], raw)
