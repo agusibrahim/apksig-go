@@ -21,7 +21,7 @@ browser without uploading anything.
 | **v4** (`.idsig`, fs-verity)     | ✅ | ✅ |
 | **v4.1** (dual-signer `.idsig`)   | ✅ | ✅ |
 | **SigningCertificateLineage**    | ✅ | – |
-| **zipalign** (4-byte entry alignment) | ✅ | ✅ |
+| **zipalign** (4-byte files, 16KiB `.so` page align) | ✅ | ✅ |
 | **JKS / PKCS#12 keystore input**  | – | ✅ |
 
 Verified APKs signed by this library are accepted byte-for-byte by Google's
@@ -100,7 +100,7 @@ Verified: true
 openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem \
   -nodes -days 10950 -subj "/CN=Android Test/O=Example/C=US"
 
-# Sign with v1 + v2 + v3 + v3.1 + v4 (.idsig) and 4-byte zipalign
+# Sign with v1 + v2 + v3 + v3.1 + v4 (.idsig) and zipalign (16KiB .so)
 apksign -key key.pem -cert cert.pem \
         -v1 -v3.1 -v4 -align \
         -in unsigned.apk -out signed.apk

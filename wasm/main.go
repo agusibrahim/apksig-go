@@ -5,10 +5,11 @@
 // Package main exposes apksig verification to JavaScript via syscall/js.
 //
 // Usage from JS:
-//   const go = new Go();
-//   await WebAssembly.instantiateStreaming(fetch("apksig.wasm"), go.importObject)
-//     .then(r => go.run(r.instance));
-//   const result = apksigVerify(uint8Array);  // returns plain object
+//
+//	const go = new Go();
+//	await WebAssembly.instantiateStreaming(fetch("apksig.wasm"), go.importObject)
+//	  .then(r => go.run(r.instance));
+//	const result = apksigVerify(uint8Array);  // returns plain object
 package main
 
 import (
@@ -80,11 +81,15 @@ func makeResult(r *apkverifier.Result) map[string]interface{} {
 		"hasV3Block":  r.HasV3Block,
 		"hasV31Block": r.HasV31Block,
 		"aligned4KB":  r.Aligned4KB,
+		"aligned16KB": r.Aligned16KB,
 		"errors":      stringsToAny(r.Errors),
 		"warnings":    stringsToAny(r.Warnings),
 	}
 	if len(r.MisalignedFiles) > 0 {
 		out["misalignedFiles"] = stringsToAny(r.MisalignedFiles)
+	}
+	if len(r.Misaligned16KB) > 0 {
+		out["misaligned16KB"] = stringsToAny(r.Misaligned16KB)
 	}
 	var signers []interface{}
 	if r.V3 != nil {

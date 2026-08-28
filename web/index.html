@@ -178,7 +178,7 @@
       <div><label><input type="checkbox" id="opt-v3" checked> v3 signature</label></div>
       <div><label><input type="checkbox" id="opt-v31"> v3.1 (rotation)</label></div>
       <div><label><input type="checkbox" id="opt-v4"> v4 (.idsig file)</label></div>
-      <div><label><input type="checkbox" id="opt-align"> zipalign (4-byte)</label></div>
+      <div><label><input type="checkbox" id="opt-align"> zipalign (4-byte / 16KiB .so)</label></div>
     </div>
 
     <details style="margin-top:8px">
@@ -265,7 +265,7 @@ const { signedApk, idsig } = apksigSign(apkBytes, keyPEM, certPEM, {
   v3: true,
   v31: false,      // v3.1 key rotation
   v4: false,       // .idsig file
-  align: false,    // 4-byte alignment
+  align: false,    // zipalign: 4-byte files, 16KiB page-align uncompressed .so
   v3MinSdk: 28,
   v31MinSdk: 33,
 });
@@ -353,10 +353,15 @@ function renderVerify(target, r, name, dt) {
   html += schemeBox('v3',  r.v3Verified, r.hasV3Block);
   html += schemeBox('v3.1',r.v31Verified, r.hasV31Block);
   html += schemeBox('4KB align', r.aligned4KB, r.aligned4KB);
+  html += schemeBox('16KB align', r.aligned16KB, r.aligned16KB);
   html += '</div>';
   if (r.misalignedFiles && r.misalignedFiles.length) {
-    html += '<div class="warn">Misaligned .so files (' + r.misalignedFiles.length +
+    html += '<div class="warn">Misaligned .so files, 4KB (' + r.misalignedFiles.length +
             '): install may fail on Android</div>';
+  }
+  if (r.misaligned16KB && r.misaligned16KB.length) {
+    html += '<div class="warn">Misaligned .so files, 16KB (' + r.misaligned16KB.length +
+            '): may fail on 16KB-page devices</div>';
   }
   if (r.signers && r.signers.length) {
     html += '<h3>Signers</h3>';

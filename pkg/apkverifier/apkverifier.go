@@ -1,12 +1,12 @@
 // Package apkverifier orchestrates v1/v2/v3 signature verification for an APK.
 //
 // Strategy:
-//   1. Load EOCD, central directory, signing block.
-//   2. Try v3.1 → v3 → v2 in order. The highest available scheme is the
-//      authoritative one for the verification result on modern Android.
-//   3. Recompute the chunked content digest for each algorithm claimed by the
-//      verified scheme(s) and compare against the per-signer digests.
-//   4. If only v1 is present, fall back to JAR signing verification.
+//  1. Load EOCD, central directory, signing block.
+//  2. Try v3.1 → v3 → v2 in order. The highest available scheme is the
+//     authoritative one for the verification result on modern Android.
+//  3. Recompute the chunked content digest for each algorithm claimed by the
+//     verified scheme(s) and compare against the per-signer digests.
+//  4. If only v1 is present, fall back to JAR signing verification.
 package apkverifier
 
 import (
@@ -44,9 +44,11 @@ type Result struct {
 	Warnings       []string
 	SignerCerts    [][]byte // Encoded x509 of the apparent signer(s) (DER)
 
-	// Alignment info for uncompressed entries.
-	Aligned4KB    bool     // true if all uncompressed .so entries are 4KB-aligned
+	// Alignment info for uncompressed .so entries.
+	Aligned4KB      bool     // true if all uncompressed .so entries are 4KB-aligned
+	Aligned16KB     bool     // true if all uncompressed .so entries are 16KB-aligned
 	MisalignedFiles []string // entries that failed 4KB alignment check
+	Misaligned16KB  []string // entries that failed 16KB alignment check
 }
 
 // V1Result is a placeholder kept for backwards compat with earlier scaffolding.
@@ -172,7 +174,7 @@ func Verify(ds datasource.DataSource, minSdk, maxSdk int) (*Result, error) {
 		}
 	}
 
-	// Check 4KB page alignment for uncompressed .so entries.
+	// Check 4KB / 16KB page alignment for uncompressed .so entries.
 	if len(cdEntries) > 0 {
 		checkAlignment(ds, cdEntries, res)
 	}
@@ -200,11 +202,11 @@ func detectAPKMinSdk(ds datasource.DataSource, entries []zippkg.CDEntry) int {
 }
 
 func checkAlignment(ds datasource.DataSource, entries []zippkg.CDEntry, res *Result) {
-	allAligned := true
+	all4 := true
+	all16 := true
 	for i := range entries {
 		e := &entries[i]
-		// Only check uncompressed entries with .so extension
-		if e.CompressionMethod != 0 || len(e.Name) < 4 || e.Name[len(e.Name)-3:] != ".so" {
+		if !zippkg.IsUncompressedNativeLib(e) {
 			continue
 		}
 		dataOff, err := zippkg.EntryDataOffset(ds, e)
@@ -212,14 +214,16 @@ func checkAlignment(ds datasource.DataSource, entries []zippkg.CDEntry, res *Res
 			continue
 		}
 		if dataOff%4096 != 0 {
-			allAligned = false
+			all4 = false
 			res.MisalignedFiles = append(res.MisalignedFiles, e.Name)
 		}
+		if dataOff%zippkg.SoPageAlignmentBytes != 0 {
+			all16 = false
+			res.Misaligned16KB = append(res.Misaligned16KB, e.Name)
+		}
 	}
-	if len(res.MisalignedFiles) > 0 {
-		allAligned = false
-	}
-	res.Aligned4KB = allAligned
+	res.Aligned4KB = all4 && len(res.MisalignedFiles) == 0
+	res.Aligned16KB = all16 && len(res.Misaligned16KB) == 0
 }
 
 func mayFindPair(b *apksigblock.Block, id uint32) *apksigblock.Pair {
