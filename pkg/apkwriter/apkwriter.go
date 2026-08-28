@@ -35,9 +35,10 @@ type SignedAPKWriter struct {
 	// will have its maxSdk capped at V31MinSdk-1 for compatibility.
 	V31MinSdk, V31MaxSdk int32
 
-	// Align enables 4-byte alignment of uncompressed ZIP entries (zipalign).
-	// When true, the entry region is rewritten with alignment extra fields
-	// (0xd935) and CD offsets are patched accordingly.
+	// Align enables zipalign of uncompressed ZIP entries. Stored files are
+	// 4-byte aligned; uncompressed .so files are 16KiB page-aligned
+	// (zipalign -P 16). When true, LFH extra fields (0xd935) are rewritten
+	// and CD offsets are patched accordingly.
 	Align bool
 }
 
@@ -151,7 +152,7 @@ func (sw *SignedAPKWriter) buildAligned(beforeEnd int64, eocd *zippkg.EOCD) (dat
 	if err != nil {
 		return nil, nil, fmt.Errorf("parse CD: %w", err)
 	}
-	plans, _, err := zippkg.ComputeAlignPlan(sw.Src, entries)
+	plans, err := zippkg.ComputeAlignPlan(sw.Src, entries)
 	if err != nil {
 		return nil, nil, fmt.Errorf("align plan: %w", err)
 	}
@@ -177,11 +178,17 @@ func (sw *SignedAPKWriter) buildAligned(beforeEnd int64, eocd *zippkg.EOCD) (dat
 			}
 			outOffset += n
 		} else {
-			// Stored entry: check if data is already 4-byte aligned at the
-			// output position. If so, copy verbatim to preserve page alignment
-			// that may already exist for .so files.
+			// Stored entry: copy verbatim only when the data payload is
+			// already aligned at the output position for this entry's
+			// required multiple (16KiB for .so, 4 bytes otherwise).
+			// Checking only 4-byte alignment would leave .so files that
+			// happen to be 4-byte aligned un-page-aligned.
+			alignTo := plans[i].Alignment
+			if alignTo == 0 {
+				alignTo = zippkg.DataAlignment(&entries[i])
+			}
 			dataOff := outOffset + plans[i].OriginalLFHSize
-			if dataOff%4 == 0 {
+			if alignTo <= 1 || dataOff%alignTo == 0 {
 				entrySize := plans[i].OriginalLFHSize + plans[i].DataSize + ddSize
 				n, err := copyDS(&entryBuf, sw.Src.Slice(plans[i].EntryStart, entrySize))
 				if err != nil {

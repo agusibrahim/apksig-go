@@ -17,6 +17,7 @@ import (
 	"github.com/agusibrahim/apksig-go/pkg/apkverifier"
 	"github.com/agusibrahim/apksig-go/pkg/datasource"
 	"github.com/agusibrahim/apksig-go/pkg/signer"
+	zippkg "github.com/agusibrahim/apksig-go/pkg/zip"
 )
 
 // makeUnsignedAPK builds an in-memory unsigned APK fixture.
@@ -221,4 +222,115 @@ func TestAlign_DataOffsetAlignment(t *testing.T) {
 	if !res.V2Verified {
 		t.Errorf("v2 should verify; errors=%v", res.Errors)
 	}
+}
+
+func TestAlign_NativeLibrary16K(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	// Short stored name so 4-byte padding is likely, which used to shift
+	// a later .so off its page boundary when only 4-byte alignment was applied.
+	h1 := &zip.FileHeader{Name: "a", Method: zip.Store}
+	w1, err := zw.CreateHeader(h1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w1.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	h2 := &zip.FileHeader{Name: "lib/arm64-v8a/libfoo.so", Method: zip.Store}
+	w2, err := zw.CreateHeader(h2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w2.Write(bytes.Repeat([]byte{0x7f, 'E', 'L', 'F'}, 64)); err != nil {
+		t.Fatal(err)
+	}
+	h3 := &zip.FileHeader{Name: "res/raw.bin", Method: zip.Store}
+	w3, err := zw.CreateHeader(h3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w3.Write([]byte("payload")); err != nil {
+		t.Fatal(err)
+	}
+	fw, err := zw.Create("classes.dex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fw.Write(bytes.Repeat([]byte{0x42}, 256)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	apk := buf.Bytes()
+	unsignedOff := entryDataOffsets(t, apk)
+	if unsignedOff["lib/arm64-v8a/libfoo.so"]%16384 == 0 {
+		t.Log("unsigned .so happened to already be 16KiB aligned; test still checks signed output")
+	}
+
+	priv, cert := makeKeyAndCert(t, false)
+	a, _ := algo.ByID(algo.SigRSAPKCS1SHA256)
+	cfg := &signer.SignerConfig{
+		PrivateKey: priv, Certs: []*x509.Certificate{cert},
+		Algorithms: []algo.Algorithm{a},
+	}
+	wr := &SignedAPKWriter{
+		Src:     datasource.NewBytes(apk),
+		Signers: []*signer.SignerConfig{cfg},
+		Align:   true,
+	}
+	var out bytes.Buffer
+	if err := wr.Write(&out); err != nil {
+		t.Fatal(err)
+	}
+	signed := out.Bytes()
+	res, err := apkverifier.Verify(datasource.NewBytes(signed), 24, 35)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if !res.V2Verified {
+		t.Fatalf("v2 should verify; errors=%v", res.Errors)
+	}
+	if !res.Aligned4KB {
+		t.Errorf("expected 4KB .so alignment; misaligned=%v", res.MisalignedFiles)
+	}
+	if !res.Aligned16KB {
+		t.Errorf("expected 16KB .so alignment; misaligned=%v", res.Misaligned16KB)
+	}
+
+	off := entryDataOffsets(t, signed)
+	soOff := off["lib/arm64-v8a/libfoo.so"]
+	if soOff%16384 != 0 {
+		t.Errorf("libfoo.so data offset %d is not 16KiB aligned", soOff)
+	}
+	if off["a"]%4 != 0 {
+		t.Errorf("stored 'a' data offset %d is not 4-byte aligned", off["a"])
+	}
+	if off["res/raw.bin"]%4 != 0 {
+		t.Errorf("stored res/raw.bin data offset %d is not 4-byte aligned", off["res/raw.bin"])
+	}
+}
+
+func entryDataOffsets(t *testing.T, apk []byte) map[string]int64 {
+	t.Helper()
+	ds := datasource.NewBytes(apk)
+	eocd, err := zippkg.FindEOCD(ds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := zippkg.ParseCD(ds, eocd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := make(map[string]int64, len(entries))
+	for i := range entries {
+		off, err := zippkg.EntryDataOffset(ds, &entries[i])
+		if err != nil {
+			t.Fatalf("offset %s: %v", entries[i].Name, err)
+		}
+		out[entries[i].Name] = off
+	}
+	return out
 }
